@@ -13,7 +13,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Shared warning flags (C/CXX only — NASM doesn't understand these)
+# Shared warning flags (C/CXX only - NASM doesn't understand these)
 add_compile_options(
     $<$<NOT:$<COMPILE_LANGUAGE:ASM_NASM>>:-Wall>
     $<$<NOT:$<COMPILE_LANGUAGE:ASM_NASM>>:-Wextra>
@@ -40,6 +40,8 @@ set(KERNEL_SOURCES
     hal/x64/gdt.cpp
     hal/x64/pic.cpp
     hal/x64/idt.cpp
+    hal/x64/irq.cpp
+    hal/x64/pit.cpp
     hal/x64/interrupts.asm
 
     # Core

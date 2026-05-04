@@ -122,12 +122,9 @@ extern "C" void InterruptDispatch(InterruptFrame* frame) {
 
         KernelPanic("Unhandled CPU exception");
     } else if (vec < 48) {
-        // IRQ (0x20–0x2F)
-        u8 irq = static_cast<u8>(vec - 32);
-        // TODO(M2): dispatch to IRQ handlers
-        // Send EOI
-        if (irq >= 8) HAL::IoOutByte(0xA0, 0x20);
-        HAL::IoOutByte(0x20, 0x20);
+        // IRQ 0x20-0x2F -> IRQ line 0-15
+        // IrqDispatch calls the registered handler then sends PIC EOI.
+        HAL::IrqDispatch(static_cast<u8>(vec - 32));
     }
 }
 

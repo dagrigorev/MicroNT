@@ -25,7 +25,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
     // Validate boot info
     if (!boot_info || boot_info->magic != BOOTINFO_MAGIC) {
-        KernelPanic("Invalid boot info magic — bootloader bug");
+        KernelPanic("Invalid boot info magic - bootloader bug");
     }
     KDBG_INFO("BootInfo: kernel=0x%llx size=%llu KB rsdp=0x%llx entries=%u",
         boot_info->kernel_phys_base,
@@ -46,11 +46,19 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
     HAL::PicInit();
 
+    HAL::IrqInit();
+
     HAL::IdtInit();
     Debug::Print("[MicroNT] IDT initialized\r\n");
 
     HAL::EnableInterrupts();
     Debug::Print("[MicroNT] HAL initialized\r\n");
+
+    // ----------------------------------------------------------
+    // M2: PIT timer
+    // ----------------------------------------------------------
+    HAL::PitInit(100);   // 100 Hz = 10 ms ticks
+    Debug::Print("[MicroNT] PIT initialized\r\n");
 
     // ----------------------------------------------------------
     // 4. Physical memory manager
@@ -107,6 +115,22 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // 12. Initrd (TODO: parse MNTAR001 from boot volume)
     // ----------------------------------------------------------
     Debug::Print("[MicroNT] Initrd mounted (TODO: parse MNTAR001)\r\n");
+
+    // ----------------------------------------------------------
+    // Verify timer is actually ticking (wait up to 500 ms)
+    // ----------------------------------------------------------
+    {
+        u64 t0 = HAL::PitTicks();
+        HAL::PitSleep(200);   // wait 200 ms
+        u64 t1 = HAL::PitTicks();
+        u64 delta = t1 - t0;
+        Debug::Printf("[INFO ] Timer: %llu ticks in 200 ms (expected ~20)\r\n", delta);
+        if (delta >= 10) {
+            Debug::Print("[MicroNT] M2 ready\r\n");
+        } else {
+            Debug::Printf("[WARN ] Timer tick count low (%llu) - IRQ0 may not be firing\r\n", delta);
+        }
+    }
 
     // ----------------------------------------------------------
     // Ready

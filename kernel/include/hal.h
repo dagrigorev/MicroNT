@@ -89,7 +89,25 @@ void CpuDetect();
 void GdtInit();
 void IdtInit();
 void PicInit();
+void PicSendEoi(u8 irq);
+void PicSetMask(u8 irq, bool masked);
 
+} // namespace HAL
+
+// ============================================================
+// IRQ handler type (outside HAL namespace so it's visible without qualification)
+// ============================================================
+using IrqHandler = void(*)(u8 irq);
+
+namespace HAL {
+void IrqInit();
+void IrqRegister(u8 irq, IrqHandler handler);
+void IrqUnregister(u8 irq);
+void IrqDispatch(u8 irq);   // called from IDT for vectors 0x20-0x2F
+
+void PitInit(u32 hz = 100);
+u64  PitTicks();
+void PitSleep(u32 ms);      // busy-wait using tick counter
 } // namespace HAL
 
 // ============================================================

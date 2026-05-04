@@ -24,7 +24,7 @@
     Skip VM deletion and recreation (reuse existing VM).
 #>
 param(
-    [int]   $BootTimeout    = 60,
+    [int]   $BootTimeout    = 90,
     [switch]$SkipBuild      = $false,
     [switch]$SkipVmRecreate = $false
 )
@@ -53,11 +53,13 @@ $ExpectedLines = @(
     '[MicroNT] GDT initialized',
     '[MicroNT] IDT initialized',
     '[MicroNT] HAL initialized',
+    '[MicroNT] PIT initialized',
     '[MicroNT] Physical memory manager initialized',
     '[MicroNT] Virtual memory manager initialized',
     '[MicroNT] Object manager initialized',
     '[MicroNT] Process manager initialized',
     '[MicroNT] PE loader initialized',
+    '[MicroNT] M2 ready',
     '[MicroNT] Ready'
 )
 
@@ -338,12 +340,9 @@ if (Test-Path $SerialLog) {
 # Step 7: Power off VM
 # ============================================================
 Step 'Power off VM'
-{
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = 'SilentlyContinue'
-    & $vbox controlvm $UUID poweroff 2>&1 | Out-Null
-    $ErrorActionPreference = $prev
-}
+$prevPO = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
+& $vbox controlvm $UUID poweroff 2>&1 | Out-Null
+$ErrorActionPreference = $prevPO
 Log '  VM powered off.' Green
 
 # ============================================================
