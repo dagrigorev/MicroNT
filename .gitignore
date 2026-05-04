@@ -1,0 +1,10 @@
+build/
+artifacts/
+*.o
+*.obj
+*.ilk
+*.pdb
+*.exp
+*.lib
+.vs/
+out/

@@ -1,0 +1,106 @@
+#pragma once
+// hal.h - MicroNT Hardware Abstraction Layer interface
+
+#include "ntdef.h"
+
+// ============================================================
+// Port I/O
+// ============================================================
+namespace HAL {
+
+inline u8 IoInByte(u16 port) {
+    u8 val;
+    __asm__ volatile("inb %1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+
+inline void IoOutByte(u16 port, u8 val) {
+    __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
+}
+
+inline u16 IoInWord(u16 port) {
+    u16 val;
+    __asm__ volatile("inw %1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+
+inline void IoOutWord(u16 port, u16 val) {
+    __asm__ volatile("outw %0, %1" :: "a"(val), "Nd"(port));
+}
+
+inline u32 IoInDword(u16 port) {
+    u32 val;
+    __asm__ volatile("inl %1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+
+inline void IoOutDword(u16 port, u32 val) {
+    __asm__ volatile("outl %0, %1" :: "a"(val), "Nd"(port));
+}
+
+inline void IoWait() {
+    IoOutByte(0x80, 0);
+}
+
+// ============================================================
+// MSR
+// ============================================================
+inline u64 ReadMsr(u32 msr) {
+    u32 lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return (static_cast<u64>(hi) << 32) | lo;
+}
+
+inline void WriteMsr(u32 msr, u64 value) {
+    __asm__ volatile("wrmsr" ::
+        "a"(static_cast<u32>(value)),
+        "d"(static_cast<u32>(value >> 32)),
+        "c"(msr));
+}
+
+// ============================================================
+// CPU control
+// ============================================================
+[[noreturn]] inline void CpuHalt() {
+    for (;;) {
+        __asm__ volatile("cli; hlt");
+    }
+}
+
+inline void EnableInterrupts()  { __asm__ volatile("sti"); }
+inline void DisableInterrupts() { __asm__ volatile("cli"); }
+
+inline u64 ReadCr2() {
+    u64 val;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(val));
+    return val;
+}
+
+inline u64 ReadCr3() {
+    u64 val;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(val));
+    return val;
+}
+
+// ============================================================
+// CPU detection
+// ============================================================
+void CpuDetect();
+void GdtInit();
+void IdtInit();
+void PicInit();
+
+} // namespace HAL
+
+// ============================================================
+// Serial constants
+// ============================================================
+constexpr u16 COM1_PORT    = 0x3F8;
+constexpr u32 DEFAULT_BAUD = 115200;
+
+namespace Serial {
+bool Init(u16 port = COM1_PORT, u32 baud = DEFAULT_BAUD);
+void PutChar(u16 port, char c);
+char GetChar(u16 port);
+void Print(u16 port, const char* str);
+} // namespace Serial

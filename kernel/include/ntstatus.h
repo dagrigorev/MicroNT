@@ -1,0 +1,46 @@
+#pragma once
+// ntstatus.h - MicroNT status codes
+// Original definitions inspired by NT status code conventions.
+
+#include "ntdef.h"
+
+// Success codes (0x0xxxxxxx)
+constexpr NTSTATUS STATUS_SUCCESS                   = 0x00000000;
+constexpr NTSTATUS STATUS_WAIT_0                    = 0x00000000;
+constexpr NTSTATUS STATUS_PENDING                   = 0x00000103;
+
+// Informational (0x4xxxxxxx)
+constexpr NTSTATUS STATUS_BUFFER_OVERFLOW           = 0x40000005;
+
+// Warning (0x8xxxxxxx)
+constexpr NTSTATUS STATUS_NO_MORE_ENTRIES           = 0x8000001A;
+constexpr NTSTATUS STATUS_BUFFER_TOO_SMALL          = 0x80000005;
+
+// Error (0xCxxxxxxx)
+constexpr NTSTATUS STATUS_UNSUCCESSFUL              = 0xC0000001;
+constexpr NTSTATUS STATUS_NOT_IMPLEMENTED           = 0xC0000002;
+constexpr NTSTATUS STATUS_INVALID_INFO_CLASS        = 0xC0000003;
+constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH      = 0xC0000004;
+constexpr NTSTATUS STATUS_ACCESS_VIOLATION          = 0xC0000005;
+constexpr NTSTATUS STATUS_IN_PAGE_ERROR             = 0xC0000006;
+constexpr NTSTATUS STATUS_INVALID_HANDLE            = 0xC0000008;
+constexpr NTSTATUS STATUS_NO_MEMORY                 = 0xC0000017;
+constexpr NTSTATUS STATUS_ACCESS_DENIED             = 0xC0000022;
+constexpr NTSTATUS STATUS_BUFFER_TOO_SMALL_ERR      = 0xC0000023;
+constexpr NTSTATUS STATUS_OBJECT_TYPE_MISMATCH      = 0xC0000024;
+constexpr NTSTATUS STATUS_NONCONTINUABLE_EXCEPTION  = 0xC0000025;
+constexpr NTSTATUS STATUS_INVALID_PARAMETER         = 0xC000000D;
+constexpr NTSTATUS STATUS_NO_SUCH_FILE              = 0xC000000F;
+constexpr NTSTATUS STATUS_END_OF_FILE               = 0xC0000011;
+constexpr NTSTATUS STATUS_OBJECT_NAME_NOT_FOUND     = 0xC0000034;
+constexpr NTSTATUS STATUS_OBJECT_NAME_COLLISION     = 0xC0000035;
+constexpr NTSTATUS STATUS_OBJECT_PATH_NOT_FOUND     = 0xC000003A;
+constexpr NTSTATUS STATUS_INVALID_IMAGE_FORMAT      = 0xC000007B;
+constexpr NTSTATUS STATUS_DLL_NOT_FOUND             = 0xC0000135;
+constexpr NTSTATUS STATUS_ENTRYPOINT_NOT_FOUND      = 0xC0000139;
+constexpr NTSTATUS STATUS_DLL_INIT_FAILED           = 0xC0000142;
+constexpr NTSTATUS STATUS_PAGE_FAULT_DEMAND_ZERO    = 0xC00000FD;
+constexpr NTSTATUS STATUS_STACK_OVERFLOW            = 0xC00000FD;
+constexpr NTSTATUS STATUS_INSUFFICIENT_RESOURCES    = 0xC000009A;
+constexpr NTSTATUS STATUS_TIMEOUT                   = 0x00000102;
+constexpr NTSTATUS STATUS_ALREADY_EXISTS            = 0xC0000035;
