@@ -77,10 +77,37 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     KernelHeap::Init(heap_base, 1024 * PAGE_SIZE);
 
     // ----------------------------------------------------------
-    // 6. VMM stub (identity map from UEFI bootloader in effect)
+    // 6. Virtual memory manager (M3: full PT walker)
     // ----------------------------------------------------------
     VMM::Init();
     Debug::Print("[MicroNT] Virtual memory manager initialized\r\n");
+
+    // M3 smoke test: map a fresh physical page at a new kernel VA,
+    // write a sentinel, read it back, then unmap.
+    {
+        u64 test_phys = PMM::AllocPage();
+        KASSERT(test_phys != 0);
+
+        u64 test_va = VMM::AllocKernelVA(1);
+        bool mapped = VMM::MapPage(test_va, test_phys,
+                                   VMM::PTE_PRESENT | VMM::PTE_WRITABLE);
+        KASSERT(mapped);
+
+        u64 resolved = VMM::V2P(test_va);
+        KASSERT(resolved == test_phys);
+
+        constexpr u64 SENTINEL = 0xDEADBEEFCAFE0001ULL;
+        *reinterpret_cast<volatile u64*>(test_va) = SENTINEL;
+        u64 readback = *reinterpret_cast<volatile u64*>(test_va);
+        KASSERT(readback == SENTINEL);
+
+        VMM::UnmapPage(test_va);
+        PMM::FreePage(test_phys);
+
+        KDBG_INFO("VMM: map/write/verify/unmap OK (VA=0x%llx PA=0x%llx)",
+                  test_va, test_phys);
+        Debug::Print("[MicroNT] M3 ready\r\n");
+    }
 
     // ----------------------------------------------------------
     // 7. Object manager

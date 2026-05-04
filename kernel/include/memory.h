@@ -40,14 +40,43 @@ usize Remaining();
 } // namespace KernelHeap
 
 // ============================================================
-// Virtual Memory Manager  (M1: stub, identity map in effect)
+// Virtual Memory Manager
 // ============================================================
 namespace VMM {
 
+// Page table entry flags
+constexpr u64 PTE_PRESENT  = (1ULL << 0);
+constexpr u64 PTE_WRITABLE = (1ULL << 1);
+constexpr u64 PTE_USER     = (1ULL << 2);
+constexpr u64 PTE_PS       = (1ULL << 7);   // huge page (PD or PDPT entry)
+constexpr u64 PTE_NX       = (1ULL << 63);  // no-execute (requires EFER.NXE)
+
+// Physical address bits in a PTE
+constexpr u64 PTE_ADDR_MASK = 0x000FFFFFFFFFF000ULL;
+
+// Init: reads CR3, records PML4 base, sets up kernel VA allocator
 void Init();
 
-// TODO(M3): MapPage, UnmapPage, page fault handler
-// For M1 the identity map from boot.asm is used directly.
+// Map a single 4 KB page. Returns false if PT allocation fails.
+// Caller must not map addresses already covered by 2MB huge pages
+// (i.e. don't use this for 0-4 GB range covered by the UEFI identity map).
+bool MapPage(u64 virt, u64 phys, u64 flags = PTE_PRESENT | PTE_WRITABLE);
+
+// Unmap a single 4 KB page and flush TLB entry.
+void UnmapPage(u64 virt);
+
+// Translate virtual -> physical (0 = not mapped or huge-page addressed).
+u64  V2P(u64 virt);
+
+// Kernel virtual address allocator.
+// Returns a range of 'pages' contiguous virtual addresses above 4 GB
+// (starting at 0xFFFF_FF80_0000_0000 on first call).
+// Caller must MapPage() each page before accessing.
+u64  AllocKernelVA(usize pages);
+
+// Called from #PF exception handler before panicking.
+// Returns true if the fault was handled (demand-zero etc.).
+bool HandlePageFault(u64 cr2, u32 error_code);
 
 } // namespace VMM
 

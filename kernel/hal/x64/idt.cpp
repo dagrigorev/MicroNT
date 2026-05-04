@@ -101,8 +101,17 @@ extern "C" void InterruptDispatch(InterruptFrame* frame) {
     if (vec < 32) {
         // CPU exception
         if (vec == 14) {
-            // Page fault: CR2 = fault address
+            // Page fault
             u64 cr2 = HAL::ReadCr2();
+
+            // Give VMM a chance to handle it (demand-zero, COW, etc.)
+            // Include VMM header inline to avoid circular dep
+            extern bool VmmHandlePageFault(u64 cr2, u32 error_code);
+            if (VmmHandlePageFault(cr2, (u32)frame->ErrorCode)) {
+                return;  // fault resolved, resume execution
+            }
+
+            // Unhandled - print diagnostics then panic
             Debug::Printf("\n[EXCEPTION] #PF at RIP=0x%016llx CR2=0x%016llx err=0x%llx\n",
                 frame->Rip, cr2, frame->ErrorCode);
             Debug::Printf("  %s%s%s\n",
