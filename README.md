@@ -104,9 +104,9 @@ VirtualBox UEFI firmware
 | M0 | Build foundation | DONE | CMake, Ninja, Clang toolchain, PowerShell scripts, Python VHD builder |
 | M1 | Bootable kernel | DONE | UEFI bootloader, long mode, GDT/IDT/PIC, PMM, heap, serial debug |
 | M2 | HAL + interrupts | DONE | PIT 100 Hz, IRQ dispatch table, spinlock, timer verification |
-| M3 | Full VMM | next | CR3 management, MapPage/UnmapPage, page fault handler |
-| M4 | Object manager | - | Handle tables, per-process handle space, object namespace |
-| M5 | Process/thread | - | KProcess/KThread, round-robin scheduler, ring-3 transition |
+| M3 | Full VMM | DONE | 4-level PT walker, MapPage/UnmapPage/V2P, kernel VA allocator |
+| M4 | Object manager | DONE | Type registry, handle table (256 slots), object namespace (128 entries) |
+| M5 | Process/thread | next | KProcess/KThread, round-robin scheduler, ring-3 transition |
 | M6 | Syscall layer | - | SYSCALL/SYSRET, NtWriteFile, NtTerminateProcess |
 | M7 | PE loader | - | Import resolution, DLL loading from initrd |
 | M8 | Win32 compat | - | ntdll.dll, kernel32.dll, WriteFile, VirtualAlloc |

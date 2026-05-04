@@ -110,10 +110,59 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
-    // 7. Object manager
+    // 7. Object manager (M4: types, handles, namespace)
     // ----------------------------------------------------------
     OB::Init();
     Debug::Print("[MicroNT] Object manager initialized\r\n");
+
+    // M4 smoke test
+    {
+        // 1. Register a type
+        ObType* test_type = nullptr;
+        struct TestBody { u64 value; };
+        NTSTATUS st = OB::CreateType("TestObject", sizeof(TestBody),
+                                      nullptr, &test_type);
+        KASSERT(NT_SUCCESS(st) && test_type);
+
+        // 2. Allocate a named object, insert into namespace
+        auto* obj = static_cast<TestBody*>(
+            OB::AllocateObject(test_type, "\\OB\\Test"));
+        KASSERT(obj);
+        obj->value = 0xABCD1234;
+
+        // 3. Open a handle
+        HANDLE h = NULL_HANDLE;
+        st = OB::InsertObject(obj, GENERIC_ALL, &h);
+        KASSERT(NT_SUCCESS(st) && h != NULL_HANDLE && h != INVALID_HANDLE);
+
+        // 4. Verify lookup by handle
+        void* looked_up = nullptr;
+        st = OB::ReferenceObjectByHandle(h, test_type, GENERIC_READ, &looked_up);
+        KASSERT(NT_SUCCESS(st) && looked_up == obj);
+        KASSERT(static_cast<TestBody*>(looked_up)->value == 0xABCD1234);
+        OB::DereferenceObject(looked_up);
+
+        // 5. Verify lookup by name
+        void* by_name = nullptr;
+        st = OB::LookupObjectByName("\\OB\\Test", test_type, &by_name);
+        KASSERT(NT_SUCCESS(st) && by_name == obj);
+        OB::DereferenceObject(by_name);
+
+        // 6. Duplicate name must fail with ALREADY_EXISTS
+        st = OB::InsertObjectByName(obj, "\\OB\\Test");
+        KASSERT(st == STATUS_ALREADY_EXISTS);
+
+        // 7. Close handle
+        st = OB::CloseHandle(h);
+        KASSERT(NT_SUCCESS(st));
+
+        // 8. Stale handle must fail with INVALID_HANDLE
+        st = OB::ReferenceObjectByHandle(h, nullptr, 0, &looked_up);
+        KASSERT(st == STATUS_INVALID_HANDLE);
+
+        OB::DumpStats();
+        Debug::Print("[MicroNT] M4 ready\r\n");
+    }
 
     // ----------------------------------------------------------
     // 8. Process manager
