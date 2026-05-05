@@ -5,19 +5,25 @@ Written from scratch in C++20 and NASM. No Windows source, no ReactOS, no EDK2.
 
 ## Status
 
-**M0 + M1 complete and passing automated boot test.**
+**M0-M5 complete and passing automated boot test.**
 
 ```
 [MicroNT] Boot started
-[MicroNT] GDT initialized
-[MicroNT] IDT initialized
-[MicroNT] HAL initialized
+[MicroNT] GDT initialized          <- M1: packed GdtTable struct, ltr 0x28
+[MicroNT] IDT initialized          <- M1: 48 stubs, page fault handler
+[MicroNT] HAL initialized          <- M1: 8259A PIC remapped
+[MicroNT] PIT initialized          <- M2: 100 Hz, IRQ0 -> Sched::Tick
 [PMM] Physical memory: 515 MB total, 491 MB free
 [MicroNT] Physical memory manager initialized
-[MicroNT] Virtual memory manager initialized
+[MicroNT] M3 ready                 <- M3: map/V2P/unmap smoke test passed
 [MicroNT] Object manager initialized
+[MicroNT] M4 ready                 <- M4: type, handle, namespace tests passed
 [MicroNT] Process manager initialized
-[MicroNT] PE loader initialized
+[INFO ] Thread A: iteration 1/3   <- M5: 3 kernel threads, round-robin scheduler
+[INFO ] Thread B: iteration 1/3
+[INFO ] Thread C: iteration 1/3
+...
+[MicroNT] M5 ready
 [MicroNT] Ready
 ```
 
@@ -106,8 +112,8 @@ VirtualBox UEFI firmware
 | M2 | HAL + interrupts | DONE | PIT 100 Hz, IRQ dispatch table, spinlock, timer verification |
 | M3 | Full VMM | DONE | 4-level PT walker, MapPage/UnmapPage/V2P, kernel VA allocator |
 | M4 | Object manager | DONE | Type registry, handle table (256 slots), object namespace (128 entries) |
-| M5 | Process/thread | next | KProcess/KThread, round-robin scheduler, ring-3 transition |
-| M6 | Syscall layer | - | SYSCALL/SYSRET, NtWriteFile, NtTerminateProcess |
+| M5 | Process/thread | DONE | KProcess/KThread, round-robin scheduler, preemptive context switch |
+| M6 | Syscall layer | next | SYSCALL/SYSRET, NtWriteFile, NtTerminateProcess |
 | M7 | PE loader | - | Import resolution, DLL loading from initrd |
 | M8 | Win32 compat | - | ntdll.dll, kernel32.dll, WriteFile, VirtualAlloc |
 | M9 | Console shell | - | STDIN/STDOUT handles, basic commands |
