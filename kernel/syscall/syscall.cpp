@@ -35,10 +35,12 @@ constexpr u64 NT_WRITE_CONSOLE    = 2;
 constexpr u64 NT_TEST_PE          = 3;
 constexpr u64 NT_WRITE_FILE       = 4;
 constexpr u64 NT_READ_LINE        = 5;
-constexpr u64 NT_CREATE_FILE      = 6;   // M10: open a boot file by name
-constexpr u64 NT_READ_FILE        = 7;   // M10: read from an open file handle
-constexpr u64 NT_CLOSE_HANDLE     = 8;   // M10: close a file handle
-constexpr u64 NT_QUERY_DIR        = 9;   // M10: list all boot files (writes names)
+constexpr u64 NT_CREATE_FILE      = 6;
+constexpr u64 NT_READ_FILE        = 7;
+constexpr u64 NT_CLOSE_HANDLE     = 8;
+constexpr u64 NT_QUERY_DIR        = 9;
+constexpr u64 NT_ALLOC_VM         = 10;   // M11: NtAllocateVirtualMemory(size, protect)
+constexpr u64 NT_FREE_VM          = 11;   // M11: NtFreeVirtualMemory(base) - stub
 
 // Command queue (pre-populated by kernel_main for M9 test)
 static const char* s_cmds[8] = {};
@@ -52,6 +54,19 @@ volatile u32 g_m6_syscall_ok = 0;
 volatile u32 g_m7_pe_ok      = 0;
 volatile u32 g_m8_write_ok   = 0;
 volatile u32 g_m9_ver_ok     = 0;
+volatile u32 g_m11_heap_ok   = 0;
+
+// Per-process user heap: bump allocator starting at 0x50000000.
+// Grows upward one PAGE_SIZE at a time.  Simple but correct for M11.
+// Each process gets its own range because each has its own PML4.
+constexpr u64 USER_HEAP_BASE = 0x500000000ULL;  // 20 GB: above 4GB identity map, no huge pages
+constexpr u64 USER_HEAP_MAX  = 0x580000000ULL; // 22 GB ceiling (2 GB heap space)
+
+// Returns current heap pointer, bumps it forward by 'pages' pages.
+// Stored per-KThread in EntryArg (repurposed as heap_cursor for now).
+// Actually simpler: use a global per-process cursor stored in KProcess.
+// For M11 we just keep a global since we run one user process at a time.
+static u64 s_user_heap_cursor = USER_HEAP_BASE;
 
 // Write one byte to user memory via explicit PML4 walk
 static bool WriteUserByte(u64 pml4, u64 user_va, u8 val) {
@@ -144,6 +159,47 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
 
     case NT_WRITE_CONSOLE:
         KDBG_TRACE("SYSCALL: NtWriteConsole stub");
+        return (u64)STATUS_SUCCESS;
+
+    case NT_ALLOC_VM: {
+        // a1=size (bytes, rounded up to pages), a2=protect (PAGE_READWRITE=4 etc.)
+        // Returns virtual address of allocated region, or 0 on failure.
+        usize size = (usize)a1;
+        if (size == 0) return 0;
+        usize pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        u64 pml4 = t->Process->Cr3;
+
+        // Bump-allocate from user heap range
+        u64 va = s_user_heap_cursor;
+        if (va + pages * PAGE_SIZE > USER_HEAP_MAX) {
+            KDBG_ERROR("SYSCALL: NtAllocVM: user heap exhausted");
+            return 0;
+        }
+        s_user_heap_cursor += pages * PAGE_SIZE;
+
+        // Map physical pages into the process PML4
+        u64 flags = VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER;
+        for (usize i = 0; i < pages; ++i) {
+            u64 phys = PMM::AllocPage();
+            if (!phys) { KDBG_ERROR("SYSCALL: NtAllocVM: PMM out"); return 0; }
+            // Zero the page (identity map: phys == virt for < 4 GB)
+            u8* p = reinterpret_cast<u8*>(phys);
+            for (usize j = 0; j < PAGE_SIZE; ++j) p[j] = 0;
+            if (!VMM::MapPageInto(pml4, va + i * PAGE_SIZE, phys, flags)) {
+                KDBG_ERROR("SYSCALL: NtAllocVM: MapPageInto failed");
+                return 0;
+            }
+        }
+        KDBG_TRACE("SYSCALL: NtAllocVM(size=%llu) -> 0x%llx (%llu pages)", (u64)size, va, (u64)pages);
+        g_m11_heap_ok = 1;
+        return va;
+    }
+
+    case NT_FREE_VM:
+        // Stub: no-op for M11 (bump allocator has no free)
         return (u64)STATUS_SUCCESS;
 
     case NT_TERMINATE_THREAD:
