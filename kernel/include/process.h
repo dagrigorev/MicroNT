@@ -43,6 +43,9 @@ struct KThread {
     // Intrusive doubly-linked list (ready queue)
     KThread*    Next;
     KThread*    Prev;
+
+    // Singly-linked list for event waiter queues
+    KThread*    WaitNext;
 };
 
 // ============================================================
@@ -101,6 +104,15 @@ void     Tick();              // called from IRQ0 handler (interrupts disabled)
 void     Schedule();          // cooperative yield (interrupts must be enabled)
 KThread* CurrentThread();
 bool     IsActive();
+
+// Block the current thread (remove from ready queue, mark BLOCKED).
+// Caller must call Schedule() after this to switch to another thread.
+// Must be called with interrupts DISABLED.
+void     BlockCurrentThread();
+
+// Unblock a thread (mark READY and add to ready queue).
+// Safe to call with interrupts enabled or disabled.
+void     UnblockThread(KThread* t);
 
 } // namespace Sched
 

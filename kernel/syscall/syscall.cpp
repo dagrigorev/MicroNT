@@ -6,6 +6,7 @@
 #include "../include/ntstatus.h"
 #include "../include/memory.h"
 #include "../include/io.h"
+#include "../include/sync.h"
 
 // ============================================================
 // MSR addresses
@@ -39,8 +40,12 @@ constexpr u64 NT_CREATE_FILE      = 6;
 constexpr u64 NT_READ_FILE        = 7;
 constexpr u64 NT_CLOSE_HANDLE     = 8;
 constexpr u64 NT_QUERY_DIR        = 9;
-constexpr u64 NT_ALLOC_VM         = 10;   // M11: NtAllocateVirtualMemory(size, protect)
-constexpr u64 NT_FREE_VM          = 11;   // M11: NtFreeVirtualMemory(base) - stub
+constexpr u64 NT_ALLOC_VM         = 10;
+constexpr u64 NT_FREE_VM          = 11;
+constexpr u64 NT_CREATE_EVENT     = 12;   // M12: NtCreateEvent(auto_reset)
+constexpr u64 NT_SET_EVENT        = 13;   // M12: NtSetEvent(handle)
+constexpr u64 NT_WAIT_SINGLE      = 14;   // M12: NtWaitForSingleObject(handle, timeout_ms)
+constexpr u64 NT_RESET_EVENT      = 15;   // M12: NtResetEvent(handle)
 
 // Command queue (pre-populated by kernel_main for M9 test)
 static const char* s_cmds[8] = {};
@@ -55,6 +60,11 @@ volatile u32 g_m7_pe_ok      = 0;
 volatile u32 g_m8_write_ok   = 0;
 volatile u32 g_m9_ver_ok     = 0;
 volatile u32 g_m11_heap_ok   = 0;
+volatile u32 g_m12_sync_ok   = 0;
+
+// Simple event handle table (handle = index+1)
+constexpr usize EVENT_TABLE_SIZE = 32;
+static KEvent* s_events[EVENT_TABLE_SIZE] = {};
 
 // Per-process user heap: bump allocator starting at 0x50000000.
 // Grows upward one PAGE_SIZE at a time.  Simple but correct for M11.
@@ -160,6 +170,51 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
     case NT_WRITE_CONSOLE:
         KDBG_TRACE("SYSCALL: NtWriteConsole stub");
         return (u64)STATUS_SUCCESS;
+
+    case NT_CREATE_EVENT: {
+        // a1=auto_reset(0/1), a2=initially_signaled(0/1)
+        // Returns event handle (1-based index), or 0 on failure
+        KEvent* ev = SYNC::EventAlloc((bool)a1, (bool)a2);
+        if (!ev) return 0;
+        for (usize i = 0; i < EVENT_TABLE_SIZE; ++i) {
+            if (!s_events[i]) {
+                s_events[i] = ev;
+                KDBG_TRACE("SYSCALL: NtCreateEvent(auto=%llu) -> handle %llu", a1, (u64)(i+1));
+                return (u64)(i + 1);
+            }
+        }
+        KDBG_ERROR("SYSCALL: NtCreateEvent: event table full");
+        return 0;
+    }
+
+    case NT_SET_EVENT: {
+        // a1=handle
+        usize idx = (usize)(a1 - 1);
+        if (idx >= EVENT_TABLE_SIZE || !s_events[idx]) return (u64)STATUS_INVALID_HANDLE;
+        KDBG_TRACE("SYSCALL: NtSetEvent(handle=%llu)", a1);
+        SYNC::EventSet(s_events[idx]);
+        return (u64)STATUS_SUCCESS;
+    }
+
+    case NT_WAIT_SINGLE: {
+        // a1=handle, a2=timeout_ms
+        usize idx = (usize)(a1 - 1);
+        if (idx >= EVENT_TABLE_SIZE || !s_events[idx]) return (u64)STATUS_INVALID_HANDLE;
+        u32 timeout = (u32)(a2 & 0xFFFFFFFF);
+        KDBG_TRACE("SYSCALL: NtWaitForSingleObject(handle=%llu timeout=%u)", a1, timeout);
+        NTSTATUS st = SYNC::EventWait(s_events[idx], timeout);
+        if (NT_SUCCESS(st)) g_m12_sync_ok = 1;
+        return (u64)st;
+    }
+
+    case NT_RESET_EVENT: {
+        // a1=handle
+        usize idx = (usize)(a1 - 1);
+        if (idx >= EVENT_TABLE_SIZE || !s_events[idx]) return (u64)STATUS_INVALID_HANDLE;
+        KDBG_TRACE("SYSCALL: NtResetEvent(handle=%llu)", a1);
+        SYNC::EventReset(s_events[idx]);
+        return (u64)STATUS_SUCCESS;
+    }
 
     case NT_ALLOC_VM: {
         // a1=size (bytes, rounded up to pages), a2=protect (PAGE_READWRITE=4 etc.)

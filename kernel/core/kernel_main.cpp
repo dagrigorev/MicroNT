@@ -9,6 +9,7 @@
 #include "../include/memory.h"
 #include "../include/object.h"
 #include "../include/process.h"
+#include "../include/sync.h"
 #include "../include/pe.h"
 #include "../include/io.h"
 #include "../ldr/hello2_pe.h"
@@ -17,6 +18,7 @@
 #include "../ldr/shell_pe.h"
 #include "../ldr/hello3_pe.h"
 #include "../ldr/hello4_pe.h"
+#include "../ldr/hello5_pe.h"
 
 
 
@@ -26,6 +28,7 @@ extern volatile u32 g_m7_pe_ok;
 extern volatile u32 g_m8_write_ok;
 extern volatile u32 g_m9_ver_ok;
 extern volatile u32 g_m11_heap_ok;
+extern volatile u32 g_m12_sync_ok;
 extern u64 s_user_heap_cursor;
 
 extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
@@ -192,6 +195,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     IO::Init();
     IO::Console::Init();
     VFS::Init(boot_info);  // M10: init VFS with bootloader-provided files
+    SYNC::Init();             // M12: synchronization layer
 
     // ----------------------------------------------------------
     // 10. Syscall layer
@@ -606,6 +610,86 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         while (!g_m8_write_ok) { Sched::Schedule(); }
         KASSERT(g_m11_heap_ok);
         Debug::Print("[MicroNT] M11 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // M12: Synchronization (KEvent, NtWaitForSingleObject)
+    //
+    // Part A (kernel): two kernel threads use an event to
+    //   synchronize - setter sleeps 300ms then signals; waiter
+    //   blocks until signaled.
+    // Part B (user):   hello5.exe tests user-mode event API.
+    // ----------------------------------------------------------
+    {
+        // --- Part A: kernel-thread synchronization test ---
+        static KEvent s_m12_ev;
+        SYNC::EventInit(&s_m12_ev, false, false);  // manual-reset, not signaled
+
+        static volatile u32 s_m12_waiter_done = 0;
+
+        // Waiter thread: blocks on event, prints message, sets done flag
+        auto waiter_fn = [](void*) {
+            KDBG_INFO("M12: waiter thread blocking on event...");
+            SYNC::EventWait(&s_m12_ev, 0xFFFFFFFF);
+            KDBG_INFO("M12: waiter thread unblocked!");
+            s_m12_waiter_done = 1;
+            PS::TerminateCurrentThread(0);
+        };
+
+        // Setter thread: sleeps 300ms then signals event
+        auto setter_fn = [](void*) {
+            HAL::PitSleep(300);
+            KDBG_INFO("M12: setter thread signaling event...");
+            SYNC::EventSet(&s_m12_ev);
+            PS::TerminateCurrentThread(0);
+        };
+
+        KThread* tw = PS::CreateKernelThread(PS::SystemProcess(),
+            "M12Waiter", static_cast<void(*)(void*)>(waiter_fn), nullptr);
+        KThread* ts = PS::CreateKernelThread(PS::SystemProcess(),
+            "M12Setter", static_cast<void(*)(void*)>(setter_fn), nullptr);
+        KASSERT(tw && ts);
+        Sched::AddThread(tw);
+        Sched::AddThread(ts);
+
+        while (!s_m12_waiter_done) { Sched::Schedule(); }
+        KDBG_INFO("M12: kernel sync test passed");
+
+        // --- Part B: user-mode event test via hello5.exe ---
+        g_m12_sync_ok = 0;
+        g_m8_write_ok = 0;   // detect "SYNC OK\n"
+
+        u64 user_cr3 = VMM::CreateUserPml4();
+        KASSERT(user_cr3);
+        KProcess* proc = PS::CreateProcess("hello5.exe", user_cr3);
+        KASSERT(proc);
+
+        u64 ntdll_entry = 0;
+        NTSTATUS st = LDR::LoadAndRegister(
+            "ntdll.dll", s_ntdll_pe, s_ntdll_pe_size,
+            user_cr3, s_ntdll_image_base, &ntdll_entry);
+        KASSERT(NT_SUCCESS(st));
+
+        u64 entry_va = 0;
+        st = LDR::LoadPe(s_hello5_pe, s_hello5_pe_size,
+                          user_cr3, s_hello5_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        constexpr u64 USER_STACK_VA = 0xC000100000ULL;
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i=0;i<PAGE_SIZE;++i) reinterpret_cast<u8*>(stk_phys)[i]=0;
+        KASSERT(VMM::MapPageInto(user_cr3, USER_STACK_VA, stk_phys,
+                                  VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER));
+
+        KThread* uthread = PS::CreateUserThread(
+            proc, "hello5.exe!main", entry_va, USER_STACK_VA + PAGE_SIZE);
+        KASSERT(uthread);
+        Sched::AddThread(uthread);
+
+        while (!g_m8_write_ok) { Sched::Schedule(); }
+        KASSERT(g_m12_sync_ok);
+        Debug::Print("[MicroNT] M12 ready\r\n");
     }
 
     // ----------------------------------------------------------

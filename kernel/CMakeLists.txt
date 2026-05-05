@@ -75,6 +75,7 @@ set(KERNEL_SOURCES
     # Syscall layer
     syscall/syscall.cpp
     syscall/syscall_entry.asm
+    sync/event.cpp
 )
 
 add_executable(micront.elf ${KERNEL_SOURCES})

@@ -104,8 +104,12 @@ static void ScheduleInternal() {
 
     KThread* prev = s_current;
 
-    // Re-add prev to ready queue (if not terminated)
-    if (prev->State != ThreadState::TERMINATED) {
+    // Re-add prev to ready queue ONLY if it's still runnable.
+    // TERMINATED: don't re-queue (process clean-up path).
+    // BLOCKED: don't re-queue either (blocked on event/mutex/sleep);
+    //          the unblock path (EventSet, timer, etc.) will re-add it.
+    // Only re-queue if the thread was RUNNING (normal preemption).
+    if (prev->State == ThreadState::RUNNING) {
         prev->State = ThreadState::READY;
         QueuePushBack(prev);
     }
@@ -154,6 +158,30 @@ void Tick() {
 void Schedule() {
     HAL::DisableInterrupts();
     ScheduleInternal();
+    HAL::EnableInterrupts();
+}
+
+} // namespace Sched
+
+// ============================================================
+// Block / Unblock
+// ============================================================
+namespace Sched {
+
+void BlockCurrentThread() {
+    // Must be called with interrupts disabled.
+    // Removes current thread from ready consideration;
+    // caller must call Schedule() to switch away.
+    if (!s_current) return;
+    s_current->State = ThreadState::BLOCKED;
+    // The thread is not in the ready queue (it's s_current), so nothing to remove.
+}
+
+void UnblockThread(KThread* t) {
+    if (!t || t->State == ThreadState::TERMINATED) return;
+    HAL::DisableInterrupts();
+    t->State = ThreadState::READY;
+    QueuePushBack(t);
     HAL::EnableInterrupts();
 }
 
