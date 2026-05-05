@@ -127,19 +127,20 @@ constexpr u32 IMAGE_DIRECTORY_ENTRY_BASERELOC    = 5;
 constexpr u32 IMAGE_DIRECTORY_ENTRY_TLS          = 9;
 
 // ============================================================
-// PE Loader
+// PE Loader (M7)
 // ============================================================
 namespace LDR {
 
 void Init();
 
-// Load a PE image from a buffer into the current (kernel) address space.
-// Returns entry point address or 0 on failure.
-// M7: will use process address space.
-NTSTATUS LoadImage(const u8* file_data, usize file_size,
-                   u64* out_entry_point, u64* out_image_base);
-
-// Resolve a single import DLL (stub for M1)
-NTSTATUS ResolveDll(const char* name, u64* out_base);
+// Load a PE32+ image into a user process address space.
+//   pe_data    - PE image in kernel memory
+//   pe_size    - byte count
+//   pml4_phys  - physical address of target process PML4
+//   load_base  - virtual base address to map the image at
+//                (should equal PE's preferred ImageBase to skip relocations)
+//   entry_out  - receives absolute entry-point VA on success
+NTSTATUS LoadPe(const void* pe_data, usize pe_size,
+                u64 pml4_phys, u64 load_base, u64* entry_out);
 
 } // namespace LDR

@@ -340,6 +340,58 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
+    // M7: PE loader smoke test
+    //  Load hello.exe (PE32+ blob) into a fresh user process,
+    //  run it, verify it calls NtTestPe(0x4D37).
+    // ----------------------------------------------------------
+    {
+        // Include pre-generated PE blob
+        #include "../ldr/hello_pe.h"
+
+        extern volatile u32 g_m7_pe_ok;
+
+        // Create user process
+        u64 user_cr3 = VMM::CreateUserPml4();
+        KASSERT(user_cr3);
+        KProcess* proc = PS::CreateProcess("hello.exe", user_cr3);
+        KASSERT(proc);
+
+        // Allocate user stack (one page above image)
+        constexpr u64 USER_STACK_VA = 0x1000100000ULL;
+        u64 stack_phys = PMM::AllocPage();
+        KASSERT(stack_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i)
+            reinterpret_cast<u8*>(stack_phys)[i] = 0;
+        bool ok = VMM::MapPageInto(user_cr3, USER_STACK_VA, stack_phys,
+                                   VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+        KASSERT(ok);
+
+        // Load PE
+        u64 entry_va = 0;
+        NTSTATUS st = LDR::LoadPe(s_hello_pe, s_hello_pe_size,
+                                   user_cr3, s_hello_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        KDBG_INFO("M7: hello.exe loaded at 0x%llx entry=0x%llx stack=0x%llx",
+                  s_hello_image_base, entry_va, USER_STACK_VA + PAGE_SIZE);
+
+        // Create and run user thread
+        KThread* uthread = PS::CreateUserThread(
+            proc, "hello.exe!main",
+            entry_va, USER_STACK_VA + PAGE_SIZE);
+        KASSERT(uthread);
+        Sched::AddThread(uthread);
+
+        // Wait for PE to call NtTestPe
+        while (!g_m7_pe_ok) {
+            Sched::Schedule();
+        }
+        KASSERT(g_m7_pe_ok == 0x4D37);  // must match magic from hello.exe
+
+        Debug::Print("[MicroNT] M7 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
     // Ready
     // ----------------------------------------------------------
     Debug::Print("[MicroNT] Ready\r\n");

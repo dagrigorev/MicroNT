@@ -27,14 +27,16 @@ static void WrMsr(u32 msr, u64 val) {
 // ============================================================
 // Syscall numbers (M6)
 // ============================================================
-constexpr u64 NT_TEST_SYSCALL     = 0;   // M6 smoke test
-constexpr u64 NT_TERMINATE_THREAD = 1;   // terminate current thread
-constexpr u64 NT_WRITE_CONSOLE    = 2;   // stub: print string from user
+constexpr u64 NT_TEST_SYSCALL     = 0;
+constexpr u64 NT_TERMINATE_THREAD = 1;
+constexpr u64 NT_WRITE_CONSOLE    = 2;
+constexpr u64 NT_TEST_PE          = 3;   // M7: set g_m7_pe_ok flag
 
 // ============================================================
 // Completion signal (checked by kernel_main M6 test)
 // ============================================================
 volatile u32 g_m6_syscall_ok = 0;
+volatile u32 g_m7_pe_ok      = 0;
 
 // Assembly entry point (syscall_entry.asm)
 extern "C" void syscall_entry();
@@ -49,6 +51,11 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
     case NT_TEST_SYSCALL:
         KDBG_INFO("SYSCALL: NtTestSyscall(a1=0x%llx) - user mode reached kernel!", a1);
         g_m6_syscall_ok = 1;
+        return (u64)STATUS_SUCCESS;
+
+    case NT_TEST_PE:
+        KDBG_INFO("SYSCALL: NtTestPe(marker=0x%llx) - PE loaded and executing!", a1);
+        g_m7_pe_ok = static_cast<u32>(a1);  // store marker for kernel to check
         return (u64)STATUS_SUCCESS;
 
     case NT_TERMINATE_THREAD:
