@@ -392,6 +392,60 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
+    // M8: Import resolution + NtWriteFile
+    //  Load ntdll.dll (syscall stubs) into a user process,
+    //  then load hello2.exe (imports NtWriteFile + NtTerminateThread).
+    //  hello2 prints "Hello from ring-3!" via NtWriteFile syscall.
+    // ----------------------------------------------------------
+    {
+        #include "../ldr/ntdll_pe.h"
+        #include "../ldr/hello2_pe.h"
+
+        extern volatile u32 g_m8_write_ok;
+
+        // Create user process
+        u64 user_cr3 = VMM::CreateUserPml4();
+        KASSERT(user_cr3);
+        KProcess* proc = PS::CreateProcess("hello2.exe", user_cr3);
+        KASSERT(proc);
+
+        // 1. Load ntdll.dll (register so import resolution can find it)
+        u64 ntdll_entry = 0;
+        NTSTATUS st = LDR::LoadAndRegister(
+            "ntdll.dll", s_ntdll_pe, s_ntdll_pe_size,
+            user_cr3, s_ntdll_image_base, &ntdll_entry);
+        KASSERT(NT_SUCCESS(st));
+
+        // 2. Load hello2.exe (imports resolved against ntdll)
+        u64 entry_va = 0;
+        st = LDR::LoadPe(s_hello2_pe, s_hello2_pe_size,
+                          user_cr3, s_hello2_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        // 3. Allocate user stack
+        constexpr u64 USER_STACK_VA = 0x8000100000ULL;
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i=0; i<PAGE_SIZE; ++i)
+            reinterpret_cast<u8*>(stk_phys)[i] = 0;
+        KASSERT(VMM::MapPageInto(user_cr3, USER_STACK_VA, stk_phys,
+                                  VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER));
+
+        KDBG_INFO("M8: hello2.exe entry=0x%llx stack_top=0x%llx",
+                  entry_va, USER_STACK_VA + PAGE_SIZE);
+
+        // 4. Run hello2
+        KThread* uthread = PS::CreateUserThread(
+            proc, "hello2.exe!main", entry_va, USER_STACK_VA + PAGE_SIZE);
+        KASSERT(uthread);
+        Sched::AddThread(uthread);
+
+        while (!g_m8_write_ok) { Sched::Schedule(); }
+
+        Debug::Print("[MicroNT] M8 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
     // Ready
     // ----------------------------------------------------------
     Debug::Print("[MicroNT] Ready\r\n");

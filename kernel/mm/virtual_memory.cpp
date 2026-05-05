@@ -209,4 +209,29 @@ void SwitchAddressSpace(u64 cr3_phys) {
     __asm__ volatile("mov %0, %%cr3" :: "r"(cr3_phys) : "memory");
 }
 
-} // namespace VMM (M6 additions)
+u64 TranslateInPml4(u64 pml4_phys, u64 virt) {
+    // 4-level page walk using explicit PML4 (identity-mapped phys == virt for <4GB)
+    auto* pml4 = reinterpret_cast<u64*>(pml4_phys);
+    u64 e1 = pml4[pml4_idx(virt)];
+    if (!(e1 & PTE_PRESENT)) return 0;
+    if (e1 & PTE_PS) return 0; // huge page at PML4 level (unsupported)
+
+    auto* pdpt = reinterpret_cast<u64*>(e1 & PTE_ADDR_MASK);
+    u64 e2 = pdpt[pdpt_idx(virt)];
+    if (!(e2 & PTE_PRESENT)) return 0;
+    if (e2 & PTE_PS) // 1 GB huge page
+        return (e2 & 0xFFFFFFC0000000ULL) | (virt & 0x3FFFFFFF);
+
+    auto* pd = reinterpret_cast<u64*>(e2 & PTE_ADDR_MASK);
+    u64 e3 = pd[pd_idx(virt)];
+    if (!(e3 & PTE_PRESENT)) return 0;
+    if (e3 & PTE_PS) // 2 MB huge page
+        return (e3 & 0xFFFFFFFE00000ULL) | (virt & 0x1FFFFF);
+
+    auto* pt = reinterpret_cast<u64*>(e3 & PTE_ADDR_MASK);
+    u64 pte = pt[pt_idx(virt)];
+    if (!(pte & PTE_PRESENT)) return 0;
+    return (pte & PTE_ADDR_MASK) | (virt & 0xFFF);
+}
+
+} // namespace VMM

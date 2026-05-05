@@ -373,6 +373,41 @@ extern "C" EFI_STATUS EfiMain(EFI_HANDLE ImageHandle,
     gBS->FreePool(elfData);
     LOG_OK("ELF loaded and segments mapped");
 
+    // ---- Step 3b: Load initrd (optional) ----
+    TRACE("Step 3b: Load /boot/initrd.bin (optional)");
+    void*  initrdData = nullptr;
+    UINTN  initrdSize = 0;
+    {
+        EFI_FILE_PROTOCOL* root2 = nullptr;
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* fs2 = nullptr;
+        EFI_GUID fsGuid2 = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+        if (!EFI_IS_ERROR(gBS->HandleProtocol(device, &fsGuid2, (void**)&fs2)) &&
+            !EFI_IS_ERROR(fs2->OpenVolume(fs2, &root2))) {
+            EFI_FILE_PROTOCOL* irfile = nullptr;
+            EFI_STATUS irst = root2->Open(root2, &irfile,
+                const_cast<CHAR16*>(L"\\boot\\initrd.bin"),
+                EFI_FILE_MODE_READ, 0);
+            if (!EFI_IS_ERROR(irst) && irfile) {
+                EFI_FILE_INFO irinfo;
+                UINTN irsz = sizeof(irinfo);
+                EFI_GUID figuid2 = EFI_FILE_INFO_GUID;
+                irfile->GetInfo(irfile, &figuid2, &irsz, &irinfo);
+                UINTN fsz = (UINTN)irinfo.FileSize;
+                if (fsz > 0 && !EFI_IS_ERROR(
+                        gBS->AllocatePool(EfiLoaderData, fsz, &initrdData))) {
+                    UINTN rsz = fsz;
+                    irfile->Read(irfile, &rsz, initrdData);
+                    initrdSize = rsz;
+                    Print("[BL] Initrd: "); PrintDec(rsz); Print(" bytes loaded\n");
+                }
+                irfile->Close(irfile);
+            } else {
+                Print("[BL] Initrd: not found (optional)\n");
+            }
+            root2->Close(root2);
+        }
+    }
+
     // ---- Step 4: ACPI RSDP ----
     TRACE("Step 4: Find ACPI RSDP");
     UINT64 rsdp=FindRsdp();
@@ -389,10 +424,12 @@ extern "C" EFI_STATUS EfiMain(EFI_HANDLE ImageHandle,
     Check(gBS->AllocatePool(EfiLoaderData,sizeof(MicroNTBootInfo),(void**)&bi),
           "AllocatePool(BootInfo)");
     Memset(bi,0,sizeof(MicroNTBootInfo));
-    bi->magic=BOOTINFO_MAGIC;
-    bi->kernel_phys_base=kernBase;
-    bi->kernel_size=kernEnd-kernBase;
-    bi->rsdp_phys=rsdp;
+    bi->magic            = BOOTINFO_MAGIC;
+    bi->kernel_phys_base = kernBase;
+    bi->kernel_size      = kernEnd-kernBase;
+    bi->rsdp_phys        = rsdp;
+    bi->initrd_phys      = initrdData ? (UINT64)(UINTN)initrdData : 0;
+    bi->initrd_size      = (UINT64)initrdSize;
     LOG_VAL("BootInfo at: ", (UINT64)(UINTN)bi);
 
     // ---- Step 7: Memory map + ExitBootServices ----

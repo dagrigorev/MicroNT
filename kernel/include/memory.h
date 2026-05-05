@@ -92,6 +92,10 @@ bool MapPageInto(u64 pml4_phys, u64 virt, u64 phys, u64 flags);
 // Switch the active address space (write CR3).
 void SwitchAddressSpace(u64 cr3_phys);
 
+// Walk an explicit PML4 to translate virtual -> physical.
+// Returns 0 if the page is not mapped or is a huge page (>4KB).
+u64  TranslateInPml4(u64 pml4_phys, u64 virt);
+
 } // namespace VMM
 
 // ============================================================

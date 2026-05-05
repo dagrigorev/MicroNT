@@ -39,6 +39,8 @@ struct MicroNTBootInfo {
     unsigned long long  kernel_phys_base;   // where the ELF was loaded
     unsigned long long  kernel_size;        // total loaded size (bytes)
     unsigned long long  rsdp_phys;          // ACPI RSDP physical addr (0 if none)
+    unsigned long long  initrd_phys;        // initrd image physical addr (0 if none)
+    unsigned long long  initrd_size;        // initrd image byte size
     unsigned int        memory_entry_count; // valid entries in memory_map[]
     unsigned int        _pad;
     BootMemoryEntry     memory_map[BOOT_MEMORY_MAX];

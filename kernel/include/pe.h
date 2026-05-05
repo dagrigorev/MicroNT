@@ -143,4 +143,9 @@ void Init();
 NTSTATUS LoadPe(const void* pe_data, usize pe_size,
                 u64 pml4_phys, u64 load_base, u64* entry_out);
 
+// Load a PE and register it in the module registry for import resolution.
+NTSTATUS LoadAndRegister(const char* name,
+                          const void* pe_data, usize pe_size,
+                          u64 pml4_phys, u64 load_base, u64* entry_out);
+
 } // namespace LDR

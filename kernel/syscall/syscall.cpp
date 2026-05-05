@@ -4,6 +4,7 @@
 #include "../include/debug.h"
 #include "../include/process.h"
 #include "../include/ntstatus.h"
+#include "../include/memory.h"
 
 // ============================================================
 // MSR addresses
@@ -30,13 +31,35 @@ static void WrMsr(u32 msr, u64 val) {
 constexpr u64 NT_TEST_SYSCALL     = 0;
 constexpr u64 NT_TERMINATE_THREAD = 1;
 constexpr u64 NT_WRITE_CONSOLE    = 2;
-constexpr u64 NT_TEST_PE          = 3;   // M7: set g_m7_pe_ok flag
+constexpr u64 NT_TEST_PE          = 3;
+constexpr u64 NT_WRITE_FILE       = 4;   // M8: NtWriteFile(handle, buf_va, len)
 
 // ============================================================
 // Completion signal (checked by kernel_main M6 test)
 // ============================================================
 volatile u32 g_m6_syscall_ok = 0;
 volatile u32 g_m7_pe_ok      = 0;
+volatile u32 g_m8_write_ok   = 0;
+
+// Read up to 'len' bytes from user virtual address into kernel buffer.
+// Uses the current thread's process Cr3 to walk the user PML4.
+static usize ReadUserBytes(u64 user_va, u8* kbuf, usize len) {
+    KThread* t = Sched::CurrentThread();
+    if (!t || !t->Process) return 0;
+    u64 pml4 = t->Process->Cr3;
+    usize copied = 0;
+    while (copied < len) {
+        u64 phys = VMM::TranslateInPml4(pml4, user_va + copied);
+        if (!phys) break;
+        usize off  = (user_va + copied) & 0xFFF;
+        usize avail = PAGE_SIZE - off;
+        usize n = len - copied < avail ? len - copied : avail;
+        const u8* src = reinterpret_cast<const u8*>(phys);
+        for (usize i=0;i<n;++i) kbuf[copied+i] = src[i];
+        copied += n;
+    }
+    return copied;
+}
 
 // Assembly entry point (syscall_entry.asm)
 extern "C" void syscall_entry();
@@ -58,15 +81,36 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         g_m7_pe_ok = static_cast<u32>(a1);  // store marker for kernel to check
         return (u64)STATUS_SUCCESS;
 
-    case NT_TERMINATE_THREAD:
+    case NT_WRITE_FILE: {
+        // a1=handle(unused for now), a2=user_buf_va, a3=length
+        u64 user_va = a2;
+        usize len   = (usize)(a3 > 512 ? 512 : a3);
+        u8 kbuf[512+1] = {};
+        usize got = ReadUserBytes(user_va, kbuf, len);
+        if (got > 0) {
+            kbuf[got] = '\0';
+            Debug::Print("[USER] ");
+            // Print bytes (may not be null-terminated)
+            for (usize i=0; i<got; ++i) {
+                char c[2]={static_cast<char>(kbuf[i]),0};
+                Debug::Print(c);
+            }
+            g_m8_write_ok = 1;
+        }
+        return (u64)STATUS_SUCCESS;
+    }
         KDBG_INFO("SYSCALL: NtTerminateThread(exit=%lld)", (i64)a1);
         PS::TerminateCurrentThread(static_cast<i32>(a1));
         // never returns
         return (u64)STATUS_SUCCESS;
 
     case NT_WRITE_CONSOLE:
-        // TODO(M7): validate user pointer, copy string, write to console
         KDBG_TRACE("SYSCALL: NtWriteConsole stub");
+        return (u64)STATUS_SUCCESS;
+
+    case NT_TERMINATE_THREAD:
+        KDBG_INFO("SYSCALL: NtTerminateThread(exit=%lld)", (i64)a1);
+        PS::TerminateCurrentThread(static_cast<i32>(a1));
         return (u64)STATUS_SUCCESS;
 
     default:
