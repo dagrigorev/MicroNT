@@ -1,47 +1,40 @@
 #pragma once
-// bootinfo.h - Boot information passed from the UEFI bootloader to the kernel.
-// Uses only primitive types so it can be included from both the freestanding
-// kernel build and the UEFI bootloader (Windows/PE target).
+// bootinfo.h - Boot information passed from UEFI bootloader to kernel.
 
-// ============================================================
-// Magic
-// ============================================================
-// 'MNBT' + version byte
 constexpr unsigned long long BOOTINFO_MAGIC = 0x544E424D01ULL;
 
-// ============================================================
-// Memory map entry
-// Simplified from EFI_MEMORY_DESCRIPTOR; only what the kernel PMM needs.
-// ============================================================
 enum BootMemoryType : unsigned int {
-    BOOT_MEM_RESERVED   = 0,
-    BOOT_MEM_AVAILABLE  = 1,   // conventional + reclaimed boot-services RAM
-    BOOT_MEM_ACPI       = 2,   // reclaimable after OS parses ACPI tables
-    BOOT_MEM_NVS        = 3,   // ACPI NVS — do NOT touch
-    BOOT_MEM_MMIO       = 4,   // memory-mapped I/O
-    BOOT_MEM_LOADER     = 5,   // bootloader / kernel image (NOT free)
+    BOOT_MEM_RESERVED = 0,
+    BOOT_MEM_AVAILABLE = 1,
+    BOOT_MEM_ACPI     = 2,
+    BOOT_MEM_NVS      = 3,
+    BOOT_MEM_MMIO     = 4,
+    BOOT_MEM_LOADER   = 5,
 };
-
 struct BootMemoryEntry {
-    unsigned long long  base;   // physical byte address (page-aligned)
-    unsigned long long  length; // byte length (page-aligned)
-    BootMemoryType      type;
-    unsigned int        _pad;
+    unsigned long long base, length;
+    BootMemoryType     type;
+    unsigned int       _pad;
 };
 
-// ============================================================
-// MicroNTBootInfo — filled by the UEFI bootloader, read by kernel_main
-// ============================================================
-constexpr unsigned int BOOT_MEMORY_MAX = 256;
+// Files loaded from /boot/*.exe by the bootloader
+constexpr unsigned int BOOT_FILES_MAX = 8;
+struct BootFile {
+    char               name[64];    // null-terminated filename
+    unsigned long long phys_base;   // physical address of raw file data
+    unsigned long long size;        // byte count
+};
 
+constexpr unsigned int BOOT_MEMORY_MAX = 256;
 struct MicroNTBootInfo {
-    unsigned long long  magic;              // must equal BOOTINFO_MAGIC
-    unsigned long long  kernel_phys_base;   // where the ELF was loaded
-    unsigned long long  kernel_size;        // total loaded size (bytes)
-    unsigned long long  rsdp_phys;          // ACPI RSDP physical addr (0 if none)
-    unsigned long long  initrd_phys;        // initrd image physical addr (0 if none)
-    unsigned long long  initrd_size;        // initrd image byte size
-    unsigned int        memory_entry_count; // valid entries in memory_map[]
-    unsigned int        _pad;
+    unsigned long long  magic;
+    unsigned long long  kernel_phys_base;
+    unsigned long long  kernel_size;
+    unsigned long long  rsdp_phys;
+    unsigned long long  initrd_phys;
+    unsigned long long  initrd_size;
+    unsigned int        memory_entry_count;
+    unsigned int        boot_file_count;
+    BootFile            boot_files[BOOT_FILES_MAX];
     BootMemoryEntry     memory_map[BOOT_MEMORY_MAX];
 };

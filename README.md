@@ -5,7 +5,7 @@ Written from scratch in C++20 and NASM. No Windows source, no ReactOS, no EDK2.
 
 ## Status
 
-**M0-M8 complete and passing automated boot test.**
+**M0-M9 complete and passing automated boot test.**
 
 ```
 [MicroNT] Boot started
@@ -116,7 +116,7 @@ VirtualBox UEFI firmware
 | M6 | Syscall layer | DONE | SYSCALL/SYSRET, per-process PML4, ring-3 user thread, NtTerminateThread |
 | M7 | PE loader | DONE | PE32+ parser, section mapping, per-process load, ring-3 execution |
 | M8 | Win32 compat | DONE | ntdll.dll PE with exports, import resolution, NtWriteFile, ring-3 I/O |
-| M9 | Console shell | next | STDIN/STDOUT handles, basic commands |
+| M9 | Console shell | DONE | NtReadLine, shell.exe, command dispatch, ver/exit commands |
 | M7 | PE loader | - | Import resolution, DLL loading from initrd |
 | M8 | Win32 compat | - | ntdll.dll, kernel32.dll, WriteFile, VirtualAlloc |
 | M9 | Console shell | - | STDIN/STDOUT handles, basic commands |

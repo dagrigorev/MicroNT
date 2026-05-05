@@ -5,6 +5,7 @@
 #include "../include/process.h"
 #include "../include/ntstatus.h"
 #include "../include/memory.h"
+#include "../include/io.h"
 
 // ============================================================
 // MSR addresses
@@ -33,7 +34,11 @@ constexpr u64 NT_TERMINATE_THREAD = 1;
 constexpr u64 NT_WRITE_CONSOLE    = 2;
 constexpr u64 NT_TEST_PE          = 3;
 constexpr u64 NT_WRITE_FILE       = 4;
-constexpr u64 NT_READ_LINE        = 5;   // M9: read next command from kernel queue
+constexpr u64 NT_READ_LINE        = 5;
+constexpr u64 NT_CREATE_FILE      = 6;   // M10: open a boot file by name
+constexpr u64 NT_READ_FILE        = 7;   // M10: read from an open file handle
+constexpr u64 NT_CLOSE_HANDLE     = 8;   // M10: close a file handle
+constexpr u64 NT_QUERY_DIR        = 9;   // M10: list all boot files (writes names)
 
 // Command queue (pre-populated by kernel_main for M9 test)
 static const char* s_cmds[8] = {};
@@ -145,6 +150,67 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         KDBG_INFO("SYSCALL: NtTerminateThread(exit=%lld)", (i64)a1);
         PS::TerminateCurrentThread(static_cast<i32>(a1));
         return (u64)STATUS_SUCCESS;
+
+    case NT_CREATE_FILE: {
+        // a1=user_path_va, a2=path_len. Returns handle index+1 (>0), or 0 on fail.
+        usize plen = (usize)(a2 > 127 ? 127 : a2);
+        char kpath[128] = {};
+        ReadUserBytes(a1, reinterpret_cast<u8*>(kpath), plen);
+        kpath[plen] = '\0';
+        KDBG_TRACE("SYSCALL: NtCreateFile('%s')", kpath);
+        i32 h = VFS::Open(kpath);
+        return h >= 0 ? (u64)(h + 1) : 0;   // encode: 0=fail, N+1=handle
+    }
+
+    case NT_READ_FILE: {
+        // a1=handle(1-based), a2=user_buf_va, a3=offset, a4=len
+        i32 h = (i32)((i64)a1 - 1);
+        u64 offset = a3;
+        usize len  = (usize)(a4 > 4096 ? 4096 : a4);
+        u8 kbuf[4096] = {};
+        i64 got = VFS::Read(h, offset, kbuf, len);
+        if (got <= 0) return 0;
+        // Copy to user buffer
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        u64 pml4 = t->Process->Cr3;
+        for (i64 i=0; i<got; ++i)
+            WriteUserByte(pml4, a2+i, kbuf[i]);
+        return (u64)got;
+    }
+
+    case NT_CLOSE_HANDLE: {
+        // a1=handle(1-based)
+        i32 h = (i32)((i64)a1 - 1);
+        VFS::Close(h);
+        return (u64)STATUS_SUCCESS;
+    }
+
+    case NT_QUERY_DIR: {
+        // a1=user_buf_va, a2=buf_len
+        // Writes null-separated filenames + sizes: "name\0" repeated, then "\0"
+        usize buf_len = (usize)(a2 > 2048 ? 2048 : a2);
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        u64 pml4 = t->Process->Cr3;
+        u64 pos  = a1;
+        u64 end  = a1 + buf_len - 1;
+
+        // Callback writes each filename
+        struct CbArgs { u64 pml4; u64 pos; u64 end; };
+        static CbArgs cb_args;
+        cb_args = { pml4, pos, end };
+        VFS::ForEach([](const char* name, u64 /*size*/) {
+            for (usize i = 0; name[i] && cb_args.pos < cb_args.end; ++i) {
+                WriteUserByte(cb_args.pml4, cb_args.pos++, (u8)name[i]);
+            }
+            if (cb_args.pos < cb_args.end)
+                WriteUserByte(cb_args.pml4, cb_args.pos++, 0);  // separator
+        });
+        // Final null terminator
+        if (cb_args.pos < end) WriteUserByte(pml4, cb_args.pos++, 0);
+        return cb_args.pos - a1;
+    }
 
     default:
         KDBG_WARN("SYSCALL: unknown number %llu (a1=0x%llx)", number, a1);

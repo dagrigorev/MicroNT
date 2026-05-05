@@ -99,7 +99,13 @@ def build_mbr(part_start, part_sectors):
 # FAT32 partition
 # ====================================================================
 def build_fat32_part(bootx64: bytes, kernel: bytes,
-                     part_sectors: int, hidden_sectors: int) -> bytes:
+                     part_sectors: int, hidden_sectors: int,
+                     extra_files=None) -> bytes:
+    """
+    extra_files: list of (filename_str, data_bytes) to add to /boot/
+    e.g. [("hello3.exe", hello3_bytes)]
+    """
+    if extra_files is None: extra_files = []
     """
     Build a FAT32 filesystem for a partition of part_sectors * 512 bytes.
     hidden_sectors = LBA offset of this partition within the disk
@@ -179,6 +185,13 @@ def build_fat32_part(bootx64: bytes, kernel: bytes,
     CL_KRN = CL_BX + n_bx
     n_krn = ncl(len(kernel))
 
+    # Extra files in /boot/: assign clusters sequentially after kernel
+    extra_cl = []   # (name, first_cluster, data)
+    cl_cur = CL_KRN + n_krn
+    for xname, xdata in extra_files:
+        extra_cl.append((xname, cl_cur, xdata))
+        cl_cur += ncl(len(xdata))
+
     fat_buf = bytearray(fat_sec * S)
 
     def fat_set(cl, val):
@@ -194,6 +207,10 @@ def build_fat32_part(bootx64: bytes, kernel: bytes,
     fat_set(CL_BX + n_bx - 1, 0x0FFFFFFF)
     for i in range(CL_KRN, CL_KRN + n_krn - 1): fat_set(i, i+1)
     fat_set(CL_KRN + n_krn - 1, 0x0FFFFFFF)
+    for xname, xcl, xdata in extra_cl:
+        nx = ncl(len(xdata))
+        for i in range(xcl, xcl + nx - 1): fat_set(i, i+1)
+        fat_set(xcl + nx - 1, 0x0FFFFFFF)
 
     f1 = RES * S; f2 = f1 + fat_sec * S
     image[f1:f1+len(fat_buf)] = fat_buf
@@ -240,11 +257,21 @@ def build_fat32_part(bootx64: bytes, kernel: bytes,
     d[0:32]  = de(b'.', b'  ', CL_BOOT, 0, ADIR)
     d[32:64] = de(b'..', b' ', CL_ROOT, 0, ADIR)
     d[64:96] = de(b'MICRONT', b'ELF', CL_KRN, len(kernel), AFILE)
+    slot = 96
+    for xname, xcl, xdata in extra_cl:
+        parts = xname.upper().split('.')
+        nm8 = parts[0][:8].encode().ljust(8, b' ')
+        ex3 = (parts[1][:3] if len(parts)>1 else '   ').encode().ljust(3, b' ')
+        d[slot:slot+32] = de(nm8, ex3, xcl, len(xdata), AFILE)
+        slot += 32
+        if slot + 32 > CSZ: break   # directory full
     image[clo(CL_BOOT):clo(CL_BOOT)+CSZ] = d
 
     # File data
     o = clo(CL_BX); image[o:o+len(bootx64)] = bootx64
     o = clo(CL_KRN); image[o:o+len(kernel)] = kernel
+    for xname, xcl, xdata in extra_cl:
+        o = clo(xcl); image[o:o+len(xdata)] = xdata
 
     return bytes(image)
 
@@ -302,7 +329,18 @@ def main():
 
     # FAT32 partition starting at PART_START
     print('  Building FAT32 filesystem...')
-    fat = build_fat32_part(efi_data, elf_data, PART_SECTORS, PART_START)
+    # Load extra boot files (*.exe) from the tools/ directory
+    import os as _os
+    script_dir = _os.path.dirname(_os.path.abspath(__file__))
+    extra_files = []
+    for fn in sorted(_os.listdir(script_dir)):
+        if fn.lower().endswith('.exe'):
+            fp = _os.path.join(script_dir, fn)
+            data = open(fp, 'rb').read()
+            extra_files.append((fn, data))
+            print(f'  Extra file  : {fn} ({len(data):,} bytes)')
+    fat = build_fat32_part(efi_data, elf_data, PART_SECTORS, PART_START,
+                           extra_files=extra_files)
     assert len(fat) == PART_SECTORS * S
     disk[PART_START*S : PART_START*S + len(fat)] = fat
 

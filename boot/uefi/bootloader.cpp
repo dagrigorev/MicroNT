@@ -428,9 +428,100 @@ extern "C" EFI_STATUS EfiMain(EFI_HANDLE ImageHandle,
     bi->kernel_phys_base = kernBase;
     bi->kernel_size      = kernEnd-kernBase;
     bi->rsdp_phys        = rsdp;
-    bi->initrd_phys      = initrdData ? (UINT64)(UINTN)initrdData : 0;
-    bi->initrd_size      = (UINT64)initrdSize;
+    bi->initrd_phys      = 0;
+    bi->initrd_size      = 0;
+    bi->boot_file_count  = 0;
     LOG_VAL("BootInfo at: ", (UINT64)(UINTN)bi);
+
+    // ---- Step 6b: Load boot files from /boot/*.exe ----
+    // Scan root directory for files matching /boot/<name>.exe and load them.
+    // This runs before ExitBootServices so UEFI filesystem is still available.
+    TRACE("Step 6b: Load boot files from /boot/");
+    {
+        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* fs = nullptr;
+        EFI_GUID fsGuid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+        EFI_STATUS sfs = gBS->HandleProtocol(device, &fsGuid, (void**)&fs);
+        if (!EFI_IS_ERROR(sfs)) {
+            EFI_FILE_PROTOCOL* root = nullptr;
+            if (!EFI_IS_ERROR(fs->OpenVolume(fs, &root))) {
+                EFI_FILE_PROTOCOL* bootDir = nullptr;
+                // Open /boot directory
+                EFI_STATUS ds = root->Open(root, &bootDir,
+                    const_cast<CHAR16*>(L"boot"), EFI_FILE_MODE_READ, 0);
+                if (!EFI_IS_ERROR(ds)) {
+                    // Read directory entries
+                    for (;;) {
+                        // EFI_FILE_INFO fits in 512 bytes for typical filenames
+                        UINT8 infoBuf[512];
+                        UINTN infoSz = sizeof(infoBuf);
+                        EFI_STATUS rs = bootDir->Read(bootDir, &infoSz, infoBuf);
+                        if (EFI_IS_ERROR(rs) || infoSz == 0) break;
+
+                        EFI_FILE_INFO* fi = (EFI_FILE_INFO*)infoBuf;
+                        if (fi->Attribute & 0x10) continue; // skip directories
+
+                        // Check extension is .exe (case-insensitive last 4 chars)
+                        CHAR16* fn = fi->FileName;
+                        UINTN fnlen = 0;
+                        while (fn[fnlen]) fnlen++;
+                        if (fnlen < 4) continue;
+                        CHAR16 e0=fn[fnlen-4], e1=fn[fnlen-3],
+                               e2=fn[fnlen-2], e3=fn[fnlen-1];
+                        // lowercase
+                        if (e0>='A'&&e0<='Z') e0+=32;
+                        if (e1>='A'&&e1<='Z') e1+=32;
+                        if (e2>='A'&&e2<='Z') e2+=32;
+                        if (e3>='A'&&e3<='Z') e3+=32;
+                        if (e0!='.'||e1!='e'||e2!='x'||e3!='e') continue;
+
+                        // Skip micront.elf
+                        if (fnlen==11 &&
+                            (fn[0]=='m'||fn[0]=='M') &&
+                            (fn[1]=='i'||fn[1]=='I')) continue;
+
+                        if (bi->boot_file_count >= BOOT_FILES_MAX) {
+                            LOG_ERR("Too many boot files, skipping rest");
+                            break;
+                        }
+
+                        BootFile* bf = &bi->boot_files[bi->boot_file_count];
+
+                        // Convert filename CHAR16 -> ASCII (ASCII-safe names only)
+                        UINTN maxN = fnlen < 63 ? fnlen : 63;
+                        for (UINTN ci=0; ci<maxN; ci++)
+                            bf->name[ci] = (char)(fn[ci] & 0x7F);
+                        bf->name[maxN] = '\0';
+
+                        // Open and read file
+                        EFI_FILE_PROTOCOL* fh = nullptr;
+                        EFI_STATUS os = bootDir->Open(bootDir, &fh, fn,
+                                                       EFI_FILE_MODE_READ, 0);
+                        if (EFI_IS_ERROR(os)) continue;
+
+                        UINTN fsize = (UINTN)fi->FileSize;
+                        void* fbuf = nullptr;
+                        if (!EFI_IS_ERROR(gBS->AllocatePool(EfiLoaderData, fsize, &fbuf))) {
+                            UINTN rdsz = fsize;
+                            if (!EFI_IS_ERROR(fh->Read(fh, &rdsz, fbuf))) {
+                                bf->phys_base = (unsigned long long)(UINTN)fbuf;
+                                bf->size      = (unsigned long long)rdsz;
+                                bi->boot_file_count++;
+                                Print("[BL] Loaded boot file: ");
+                                for (UINTN ci=0; bf->name[ci]; ci++) SerialPut(bf->name[ci]);
+                                Print(" (");
+                                PrintDec(rdsz);
+                                Print(" bytes)\n");
+                            }
+                        }
+                        fh->Close(fh);
+                    }
+                    bootDir->Close(bootDir);
+                }
+                root->Close(root);
+            }
+        }
+        LOG_DEC("Boot files loaded: ", (UINT64)bi->boot_file_count);
+    }
 
     // ---- Step 7: Memory map + ExitBootServices ----
     TRACE("Step 7: Get memory map and exit boot services");

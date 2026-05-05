@@ -64,6 +64,7 @@ set(KERNEL_SOURCES
 
     # I/O
     io/console.cpp
+    io/vfs.cpp
 
     # PE loader
     ldr/pe_loader.cpp

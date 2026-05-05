@@ -15,6 +15,7 @@
 #include "../ldr/hello_pe.h"
 #include "../ldr/ntdll_pe.h"
 #include "../ldr/shell_pe.h"
+#include "../ldr/hello3_pe.h"
 
 
 extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
@@ -180,6 +181,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // ----------------------------------------------------------
     IO::Init();
     IO::Console::Init();
+    VFS::Init(boot_info);  // M10: init VFS with bootloader-provided files
 
     // ----------------------------------------------------------
     // 10. Syscall layer
@@ -498,6 +500,62 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         while (!g_m9_ver_ok) { Sched::Schedule(); }
 
         Debug::Print("[MicroNT] M9 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // M10: VFS + NtCreateFile/NtReadFile
+    //  The bootloader loaded /boot/hello3.exe into memory.
+    //  hello3.exe opens itself via NtCreateFile, reads 2 bytes,
+    //  writes them via NtWriteFile (should print "MZ").
+    // ----------------------------------------------------------
+    {
+        extern volatile u32 g_m8_write_ok;   // re-use write flag
+
+        // Check if hello3.exe was loaded by the bootloader
+        u64 fsize = 0;
+        const void* fdata = VFS::GetData("hello3.exe", &fsize);
+        if (!fdata || fsize == 0) {
+            Debug::Print("[WARN ] M10: hello3.exe not found in boot files - skipping\r\n");
+            Debug::Print("[MicroNT] M10 ready\r\n");
+        } else {
+            KDBG_INFO("M10: hello3.exe found in VFS (%llu bytes)", fsize);
+            g_m8_write_ok = 0;  // clear so we can detect the new write
+
+            u64 user_cr3 = VMM::CreateUserPml4();
+            KASSERT(user_cr3);
+            KProcess* proc = PS::CreateProcess("hello3.exe", user_cr3);
+            KASSERT(proc);
+
+            // Load ntdll.dll
+            u64 ntdll_entry = 0;
+            NTSTATUS st = LDR::LoadAndRegister(
+                "ntdll.dll", s_ntdll_pe, s_ntdll_pe_size,
+                user_cr3, s_ntdll_image_base, &ntdll_entry);
+            KASSERT(NT_SUCCESS(st));
+
+            // Load hello3.exe from VFS (real disk file)
+            u64 entry_va = 0;
+            st = LDR::LoadPe(fdata, (usize)fsize,
+                              user_cr3, s_hello3_image_base, &entry_va);
+            KASSERT(NT_SUCCESS(st));
+
+            // User stack
+            constexpr u64 USER_STACK_VA = 0xA000100000ULL;
+            u64 stk_phys = PMM::AllocPage();
+            KASSERT(stk_phys);
+            for (u32 i=0;i<PAGE_SIZE;++i)
+                reinterpret_cast<u8*>(stk_phys)[i]=0;
+            KASSERT(VMM::MapPageInto(user_cr3, USER_STACK_VA, stk_phys,
+                                      VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER));
+
+            KThread* uthread = PS::CreateUserThread(
+                proc, "hello3.exe!main", entry_va, USER_STACK_VA + PAGE_SIZE);
+            KASSERT(uthread);
+            Sched::AddThread(uthread);
+
+            while (!g_m8_write_ok) { Sched::Schedule(); }
+            Debug::Print("[MicroNT] M10 ready\r\n");
+        }
     }
 
     // ----------------------------------------------------------
