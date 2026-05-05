@@ -91,6 +91,7 @@ void IdtInit();
 void PicInit();
 void PicSendEoi(u8 irq);
 void PicSetMask(u8 irq, bool masked);
+void SetTSSRsp0(u64 rsp0);   // update TSS.RSP0 (kernel stack for ring-3 -> ring-0)
 
 } // namespace HAL
 

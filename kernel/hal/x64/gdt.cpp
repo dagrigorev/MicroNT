@@ -133,3 +133,9 @@ void GdtInit() {
 }
 
 } // namespace HAL
+
+namespace HAL {
+void SetTSSRsp0(u64 rsp0) {
+    s_tss.Rsp0 = rsp0;
+}
+} // namespace HAL

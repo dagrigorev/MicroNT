@@ -59,6 +59,8 @@ set(KERNEL_SOURCES
 
     # Process manager
     ps/process.cpp
+    ps/scheduler.cpp
+    ps/switch.asm
 
     # I/O
     io/console.cpp

@@ -39,11 +39,16 @@ void IrqUnregister(u8 irq) {
 void IrqDispatch(u8 irq) {
     if (irq >= 16) return;
 
+    // Send EOI BEFORE calling the handler so the PIC unmasks this IRQ line
+    // immediately. Without early EOI, if the handler performs a context switch
+    // (e.g. Sched::Tick -> switch_context), the new thread runs with IRQ0 still
+    // masked. Any PitSleep in the new thread busy-waits on s_ticks, which only
+    // increments in the timer handler -- but the timer handler can't fire until
+    // EOI clears the ISR bit. Result: the new thread loops forever.
+    PicSendEoi(irq);
+
     // Call the registered handler
     s_handlers[irq](irq);
-
-    // Send EOI to PIC (must come after handler so spurious IRQs are handled)
-    PicSendEoi(irq);
 }
 
 } // namespace HAL

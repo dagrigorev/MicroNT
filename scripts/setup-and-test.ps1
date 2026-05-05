@@ -24,7 +24,7 @@
     Skip VM deletion and recreation (reuse existing VM).
 #>
 param(
-    [int]   $BootTimeout    = 90,
+    [int]   $BootTimeout    = 120,
     [switch]$SkipBuild      = $false,
     [switch]$SkipVmRecreate = $false
 )
@@ -60,6 +60,7 @@ $ExpectedLines = @(
     '[MicroNT] Object manager initialized',
     '[MicroNT] M4 ready',
     '[MicroNT] Process manager initialized',
+    '[MicroNT] M5 ready',
     '[MicroNT] PE loader initialized',
     '[MicroNT] M2 ready',
     '[MicroNT] Ready'

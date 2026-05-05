@@ -1,5 +1,5 @@
 #pragma once
-// process.h - MicroNT Process Manager interface
+// process.h - MicroNT M5: Process and Thread management
 
 #include "ntdef.h"
 #include "ntstatus.h"
@@ -8,61 +8,107 @@
 // Thread states
 // ============================================================
 enum class ThreadState : u32 {
-    Initialized = 0,
-    Ready       = 1,
-    Running     = 2,
-    Waiting     = 3,
-    Terminated  = 4,
+    READY      = 0,
+    RUNNING    = 1,
+    BLOCKED    = 2,
+    TERMINATED = 3,
 };
 
 // ============================================================
-// Forward declarations
+// KThread - Kernel Thread Control Block
+//
+// CRITICAL: KernelStackPtr MUST remain at offset 0.
+// switch_context (switch.asm) uses [rdi+0] and [rsi+0] directly.
 // ============================================================
 struct KProcess;
-struct KThread;
+
+struct KThread {
+    u64         KernelStackPtr;   // offset 0: saved RSP (set by switch_context)
+
+    u32         Tid;
+    ThreadState State;
+    u32         QuantumLeft;      // remaining ticks before preemption
+    u32         Flags;
+
+    KProcess*   Process;          // owning process
+
+    u64         KernelStackBase;  // bottom of kernel stack allocation (phys)
+    usize       KernelStackSize;  // size in bytes
+
+    void*       EntryFn;          // original entry function (for kernel threads)
+    void*       EntryArg;
+
+    char        Name[32];
+
+    // Intrusive doubly-linked list (ready queue)
+    KThread*    Next;
+    KThread*    Prev;
+};
 
 // ============================================================
-// Process Manager
+// KProcess - Kernel Process Control Block
+// ============================================================
+struct KProcess {
+    u32         Pid;
+    u32         Flags;
+    u64         Cr3;              // physical address of PML4
+    char        Name[32];
+    i32         ExitStatus;
+};
+
+// ============================================================
+// PS - Process/Thread creation
 // ============================================================
 namespace PS {
 
-void Init();
+void     Init();
 
-// Create a minimal system process (M1: stub)
-KProcess* CreateProcess(const char* name);
+KProcess* CreateProcess(const char* name, u64 cr3 = 0);
+void      DestroyProcess(KProcess* process);
 
-// Create a minimal thread (M1: stub)
-KThread* CreateThread(KProcess* process, u64 entry_point, u64 stack_top);
+// Allocate and set up a kernel thread (runs entry_fn(arg) in ring 0).
+// Does NOT add to the scheduler ready queue - caller does Sched::AddThread().
+KThread* CreateKernelThread(KProcess* process, const char* name,
+                             void (*entry_fn)(void*), void* arg,
+                             usize kernel_stack_size = 16384);
 
-// Current process/thread (M1: single-process stub)
-KProcess* CurrentProcess();
-KThread*  CurrentThread();
+// Allocate and set up a user thread (transitions to ring 3 via IRETQ).
+// user_stack_va: top of user stack (already mapped by caller).
+KThread* CreateUserThread(KProcess* process, const char* name,
+                           u64 user_entry_va, u64 user_stack_va,
+                           usize kernel_stack_size = 16384);
 
-// Terminate
-void TerminateProcess(KProcess* process, NTSTATUS exit_status);
-void TerminateThread(KThread* thread, NTSTATUS exit_status);
+// Mark current thread TERMINATED and yield. Does not return.
+[[noreturn]] void TerminateCurrentThread(i32 exit_code = 0);
+
+KProcess* SystemProcess();
+KThread*  MainThread();    // the "boot" thread representing kernel_main
 
 } // namespace PS
 
 // ============================================================
-// KProcess structure
+// Sched - Round-robin scheduler
 // ============================================================
-struct KProcess {
-    char     Name[64];
-    u64      PageDirectoryBase;   // CR3 value (M3)
-    u32      Pid;
-    NTSTATUS ExitStatus;
-    bool     IsTerminated;
-};
+namespace Sched {
+
+constexpr u32 QUANTUM_TICKS = 5;  // 5 ticks = 50 ms at 100 Hz
+
+void     Init();
+void     Start();             // enable preemption; boot thread becomes main thread
+void     AddThread(KThread* t);
+void     RemoveThread(KThread* t);  // remove from ready queue (if present)
+void     Tick();              // called from IRQ0 handler (interrupts disabled)
+void     Schedule();          // cooperative yield (interrupts must be enabled)
+KThread* CurrentThread();
+bool     IsActive();
+
+} // namespace Sched
 
 // ============================================================
-// KThread structure
+// Assembly trampolines (switch.asm)
 // ============================================================
-struct KThread {
-    KProcess*   Process;
-    u64         Rsp;              // saved stack pointer
-    u64         EntryPoint;
-    u32         Tid;
-    ThreadState State;
-    NTSTATUS    ExitStatus;
-};
+extern "C" {
+    void switch_context(KThread* prev, KThread* next);  // save/restore RSP + callee-saved
+    void kernel_thread_entry();   // entry trampoline for kernel threads
+    void user_thread_entry();     // IRETQ trampoline for user threads
+}

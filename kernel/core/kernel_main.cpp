@@ -165,7 +165,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
-    // 8. Process manager
+    // 8. Process/Thread manager (M5)
     // ----------------------------------------------------------
     PS::Init();
     Debug::Print("[MicroNT] Process manager initialized\r\n");
@@ -193,19 +193,69 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     Debug::Print("[MicroNT] Initrd mounted (TODO: parse MNTAR001)\r\n");
 
     // ----------------------------------------------------------
-    // Verify timer is actually ticking (wait up to 500 ms)
+    // M2: verify timer is ticking
     // ----------------------------------------------------------
     {
         u64 t0 = HAL::PitTicks();
-        HAL::PitSleep(200);   // wait 200 ms
+        HAL::PitSleep(200);
         u64 t1 = HAL::PitTicks();
         u64 delta = t1 - t0;
         Debug::Printf("[INFO ] Timer: %llu ticks in 200 ms (expected ~20)\r\n", delta);
         if (delta >= 10) {
             Debug::Print("[MicroNT] M2 ready\r\n");
         } else {
-            Debug::Printf("[WARN ] Timer tick count low (%llu) - IRQ0 may not be firing\r\n", delta);
+            Debug::Printf("[WARN ] Timer tick count low (%llu)\r\n", delta);
         }
+    }
+
+    // ----------------------------------------------------------
+    // M5: Scheduler smoke test
+    //  3 kernel threads each print 3 iterations then exit.
+    //  kernel_main (the "Main" thread) waits for all 3 to finish.
+    // ----------------------------------------------------------
+    {
+        static volatile u32 s_done = 0;
+
+        struct ThreadArgs { const char* name; u32 iters; };
+        static ThreadArgs argsA{"Thread A", 3};
+        static ThreadArgs argsB{"Thread B", 3};
+        static ThreadArgs argsC{"Thread C", 3};
+
+        auto test_fn = [](void* varg) {
+            auto* a = static_cast<ThreadArgs*>(varg);
+            for (u32 i = 1; i <= a->iters; ++i) {
+                Debug::Printf("[INFO ] %s: iteration %u/%u\r\n",
+                              a->name, i, a->iters);
+                HAL::PitSleep(80);   // 80 ms between iterations
+            }
+            HAL::DisableInterrupts();
+            s_done = s_done + 1u;
+            HAL::EnableInterrupts();
+        };
+
+        KThread* ta = PS::CreateKernelThread(
+            PS::SystemProcess(), "ThreadA",
+            static_cast<void(*)(void*)>(test_fn), &argsA);
+        KThread* tb = PS::CreateKernelThread(
+            PS::SystemProcess(), "ThreadB",
+            static_cast<void(*)(void*)>(test_fn), &argsB);
+        KThread* tc = PS::CreateKernelThread(
+            PS::SystemProcess(), "ThreadC",
+            static_cast<void(*)(void*)>(test_fn), &argsC);
+        KASSERT(ta && tb && tc);
+
+        Sched::Start();     // Main thread becomes s_current; preemption enabled
+
+        Sched::AddThread(ta);
+        Sched::AddThread(tb);
+        Sched::AddThread(tc);
+
+        // Yield until all 3 threads have finished
+        while (s_done < 3) {
+            Sched::Schedule();   // cooperative yield
+        }
+
+        Debug::Print("[MicroNT] M5 ready\r\n");
     }
 
     // ----------------------------------------------------------
