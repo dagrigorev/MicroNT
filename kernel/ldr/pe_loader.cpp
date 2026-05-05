@@ -10,13 +10,12 @@
 // ============================================================
 namespace {
 
-constexpr u32 IMAGE_NT_SIGNATURE   = 0x00004550u;
+[[maybe_unused]] constexpr u32 IMAGE_NT_SIGNATURE   = 0x00004550u;
 constexpr u16 IMAGE_AMD64          = 0x8664;
 constexpr u16 IMAGE_PE32PLUS       = 0x020Bu;
 
-// Data directory indices
-constexpr u32 DIR_EXPORT  = 0;
-constexpr u32 DIR_IMPORT  = 1;
+[[maybe_unused]] constexpr u32 DIR_EXPORT  = 0;
+[[maybe_unused]] constexpr u32 DIR_IMPORT  = 1;
 
 // Section flags -> PTE flags
 u64 SectionPteFlags(u32 chars) {

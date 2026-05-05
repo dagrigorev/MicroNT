@@ -11,6 +11,11 @@
 #include "../include/process.h"
 #include "../include/pe.h"
 #include "../include/io.h"
+#include "../ldr/hello2_pe.h"
+#include "../ldr/hello_pe.h"
+#include "../ldr/ntdll_pe.h"
+#include "../ldr/shell_pe.h"
+
 
 extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // ----------------------------------------------------------
@@ -346,7 +351,6 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // ----------------------------------------------------------
     {
         // Include pre-generated PE blob
-        #include "../ldr/hello_pe.h"
 
         extern volatile u32 g_m7_pe_ok;
 
@@ -398,8 +402,6 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     //  hello2 prints "Hello from ring-3!" via NtWriteFile syscall.
     // ----------------------------------------------------------
     {
-        #include "../ldr/ntdll_pe.h"
-        #include "../ldr/hello2_pe.h"
 
         extern volatile u32 g_m8_write_ok;
 
@@ -443,6 +445,59 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         while (!g_m8_write_ok) { Sched::Schedule(); }
 
         Debug::Print("[MicroNT] M8 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // M9: Console shell
+    //  shell.exe reads commands from kernel queue via NtReadLine,
+    //  handles "ver" by writing the version string via NtWriteFile.
+    // ----------------------------------------------------------
+    {
+
+        extern volatile u32 g_m9_ver_ok;
+
+        // Pre-populate command queue: ["ver", "exit"]
+        const char* cmds[] = { "ver", "exit" };
+        SYSCALL::SetCommands(cmds, 2);
+
+        // Create user process
+        u64 user_cr3 = VMM::CreateUserPml4();
+        KASSERT(user_cr3);
+        KProcess* proc = PS::CreateProcess("shell.exe", user_cr3);
+        KASSERT(proc);
+
+        // Load ntdll.dll (provides NtReadLine, NtWriteFile, NtTerminateThread)
+        u64 ntdll_entry = 0;
+        NTSTATUS st = LDR::LoadAndRegister(
+            "ntdll.dll", s_ntdll_pe, s_ntdll_pe_size,
+            user_cr3, s_ntdll_image_base, &ntdll_entry);
+        KASSERT(NT_SUCCESS(st));
+
+        // Load shell.exe (imports resolved against ntdll)
+        u64 entry_va = 0;
+        st = LDR::LoadPe(s_shell_pe, s_shell_pe_size,
+                          user_cr3, s_shell_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        // User stack
+        constexpr u64 USER_STACK_VA = 0x9000100000ULL;
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i)
+            reinterpret_cast<u8*>(stk_phys)[i] = 0;
+        KASSERT(VMM::MapPageInto(user_cr3, USER_STACK_VA, stk_phys,
+                                  VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER));
+
+        KDBG_INFO("M9: shell.exe entry=0x%llx", entry_va);
+
+        KThread* uthread = PS::CreateUserThread(
+            proc, "shell.exe!main", entry_va, USER_STACK_VA + PAGE_SIZE);
+        KASSERT(uthread);
+        Sched::AddThread(uthread);
+
+        while (!g_m9_ver_ok) { Sched::Schedule(); }
+
+        Debug::Print("[MicroNT] M9 ready\r\n");
     }
 
     // ----------------------------------------------------------

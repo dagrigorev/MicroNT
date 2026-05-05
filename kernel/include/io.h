@@ -26,4 +26,5 @@ namespace Console {
 // ============================================================
 namespace SYSCALL {
 void Init();
+void SetCommands(const char** cmds, u32 count);
 } // namespace SYSCALL

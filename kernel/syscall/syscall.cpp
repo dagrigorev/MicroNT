@@ -32,7 +32,13 @@ constexpr u64 NT_TEST_SYSCALL     = 0;
 constexpr u64 NT_TERMINATE_THREAD = 1;
 constexpr u64 NT_WRITE_CONSOLE    = 2;
 constexpr u64 NT_TEST_PE          = 3;
-constexpr u64 NT_WRITE_FILE       = 4;   // M8: NtWriteFile(handle, buf_va, len)
+constexpr u64 NT_WRITE_FILE       = 4;
+constexpr u64 NT_READ_LINE        = 5;   // M9: read next command from kernel queue
+
+// Command queue (pre-populated by kernel_main for M9 test)
+static const char* s_cmds[8] = {};
+static u32         s_cmd_count = 0;
+static u32         s_cmd_idx   = 0;
 
 // ============================================================
 // Completion signal (checked by kernel_main M6 test)
@@ -40,6 +46,15 @@ constexpr u64 NT_WRITE_FILE       = 4;   // M8: NtWriteFile(handle, buf_va, len)
 volatile u32 g_m6_syscall_ok = 0;
 volatile u32 g_m7_pe_ok      = 0;
 volatile u32 g_m8_write_ok   = 0;
+volatile u32 g_m9_ver_ok     = 0;
+
+// Write one byte to user memory via explicit PML4 walk
+static bool WriteUserByte(u64 pml4, u64 user_va, u8 val) {
+    u64 phys = VMM::TranslateInPml4(pml4, user_va);
+    if (!phys) return false;
+    *reinterpret_cast<u8*>(phys) = val;
+    return true;
+}
 
 // Read up to 'len' bytes from user virtual address into kernel buffer.
 // Uses the current thread's process Cr3 to walk the user PML4.
@@ -81,6 +96,21 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         g_m7_pe_ok = static_cast<u32>(a1);  // store marker for kernel to check
         return (u64)STATUS_SUCCESS;
 
+    case NT_READ_LINE: {
+        // a1=user_buf_va, a2=max_len. Returns bytes written (0=no more commands).
+        if (s_cmd_idx >= s_cmd_count) return 0;
+        const char* cmd = s_cmds[s_cmd_idx++];
+        usize len = 0; while (cmd[len]) ++len;
+        if (len >= (usize)a2) len = (usize)a2 - 1;
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        u64 pml4 = t->Process->Cr3;
+        for (usize i=0; i<len; ++i) WriteUserByte(pml4, a1+i, (u8)cmd[i]);
+        WriteUserByte(pml4, a1+len, 0);  // null terminate
+        KDBG_TRACE("SYSCALL: NtReadLine -> '%s' (%llu bytes)", cmd, (u64)len);
+        return (u64)len;
+    }
+
     case NT_WRITE_FILE: {
         // a1=handle(unused for now), a2=user_buf_va, a3=length
         u64 user_va = a2;
@@ -96,6 +126,9 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 Debug::Print(c);
             }
             g_m8_write_ok = 1;
+            // M9: check for version string
+            if (got >= 7 && kbuf[0]=='M' && kbuf[1]=='i' && kbuf[2]=='c')
+                g_m9_ver_ok = 1;
         }
         return (u64)STATUS_SUCCESS;
     }
@@ -142,6 +175,18 @@ void Init() {
     KDBG_INFO("SYSCALL: LSTAR=0x%llx STAR=0x%llx",
               reinterpret_cast<u64>(syscall_entry),
               (0x10ULL << 48) | (0x08ULL << 32));
+}
+
+} // namespace SYSCALL
+
+namespace SYSCALL {
+
+void SetCommands(const char** cmds, u32 count) {
+    s_cmd_idx = 0;
+    s_cmd_count = 0;
+    for (u32 i = 0; i < count && i < 8; ++i)
+        s_cmds[s_cmd_count++] = cmds[i];
+    KDBG_INFO("SYSCALL: command queue loaded (%u commands)", s_cmd_count);
 }
 
 } // namespace SYSCALL
