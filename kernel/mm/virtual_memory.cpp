@@ -160,3 +160,53 @@ bool HandlePageFault(u64 cr2, u32 error_code) {
 extern "C" bool VmmHandlePageFault(u64 cr2, u32 error_code) {
     return VMM::HandlePageFault(cr2, error_code);
 }
+
+// ============================================================
+// M6: Per-process address space
+// ============================================================
+
+namespace VMM {
+
+u64 CreateUserPml4() {
+    u64 phys = PMM::AllocPage();
+    if (!phys) return 0;
+
+    auto* new_pml4    = reinterpret_cast<u64*>(phys);
+    auto* kernel_pml4 = reinterpret_cast<u64*>(s_pml4_phys);
+
+    // Copy all 512 entries so the kernel (at 0x100000 = PML4[0]) stays mapped.
+    // Then set PTE_USER on every present PML4 entry so that ring-3 page-table
+    // walks can traverse the intermediate tables.  Kernel pages themselves do
+    // NOT have PTE_USER in their PT entries, so ring-3 still faults on them.
+    // Only explicitly user-mapped pages (PTE_USER in the PTE) are accessible.
+    for (int i = 0; i < 512; ++i) {
+        u64 e = kernel_pml4[i];
+        if (e & PTE_PRESENT)
+            e |= PTE_USER;  // allow ring-3 to traverse this PDPT
+        new_pml4[i] = e;
+    }
+
+    KDBG_TRACE("VMM: CreateUserPml4 -> phys 0x%llx", phys);
+    return phys;
+}
+
+bool MapPageInto(u64 pml4_phys, u64 virt, u64 phys, u64 flags) {
+    auto* pml4 = reinterpret_cast<u64*>(pml4_phys);
+
+    u64* pdpt = get_or_alloc(&pml4[pml4_idx(virt)], true);
+    if (!pdpt) return false;
+    u64* pd = get_or_alloc(&pdpt[pdpt_idx(virt)], true);
+    if (!pd) return false;
+    u64* pt = get_or_alloc(&pd[pd_idx(virt)], true);
+    if (!pt) return false;
+
+    pt[pt_idx(virt)] = (phys & PTE_ADDR_MASK) | (flags | PTE_PRESENT);
+    // Note: no invlpg - this PML4 may not be active
+    return true;
+}
+
+void SwitchAddressSpace(u64 cr3_phys) {
+    __asm__ volatile("mov %0, %%cr3" :: "r"(cr3_phys) : "memory");
+}
+
+} // namespace VMM (M6 additions)

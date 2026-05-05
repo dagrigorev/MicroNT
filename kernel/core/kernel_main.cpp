@@ -259,6 +259,87 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
+    // M6: User-mode thread + SYSCALL smoke test
+    // ----------------------------------------------------------
+    {
+        extern volatile u32 g_m6_syscall_ok;
+
+        // -- User code (12 bytes) embedded as raw x86-64 machine code --
+        // xor eax, eax (syscall 0 = NT_TEST_SYSCALL)
+        // mov edi, 42  (arg1 = 42)
+        // syscall
+        // inc eax      (syscall 1 = NT_TERMINATE_THREAD)
+        // xor edi, edi (exit code = 0)
+        // syscall
+        // jmp $        (safety)
+        static const u8 USER_CODE[] = {
+            0x31, 0xC0,                   // xor eax, eax
+            0xBF, 0x2A, 0x00, 0x00, 0x00, // mov edi, 42
+            0x0F, 0x05,                   // syscall   -> NT_TEST_SYSCALL
+            0xFF, 0xC0,                   // inc eax
+            0x31, 0xFF,                   // xor edi, edi
+            0x0F, 0x05,                   // syscall   -> NT_TERMINATE_THREAD
+            0xEB, 0xFE                    // jmp $
+        };
+
+        // Allocate physical pages for code and stack
+        u64 code_phys  = PMM::AllocPage();
+        u64 stack_phys = PMM::AllocPage();
+        KASSERT(code_phys && stack_phys);
+
+        // Zero pages then copy user code
+        for (u32 i = 0; i < PAGE_SIZE; ++i)
+            reinterpret_cast<u8*>(code_phys)[i]  = 0;
+        for (u32 i = 0; i < PAGE_SIZE; ++i)
+            reinterpret_cast<u8*>(stack_phys)[i] = 0;
+        for (u32 i = 0; i < sizeof(USER_CODE); ++i)
+            reinterpret_cast<u8*>(code_phys)[i] = USER_CODE[i];
+
+        // Create user process with its own PML4 (kernel half shared)
+        u64 user_cr3 = VMM::CreateUserPml4();
+        KASSERT(user_cr3);
+
+        KProcess* uproc = PS::CreateProcess("UserTest", user_cr3);
+        KASSERT(uproc);
+
+        // User VAs must be above 4 GB to avoid the 2 MB huge-page region
+        // (0-4 GB is identity-mapped with PS=1 entries; MapPageInto cannot
+        // create 4 KB PTEs inside an existing 2 MB huge page).
+        // We use PDPT[8] of PML4[0]: VA = 8 * 1GB = 0x200000000.
+        constexpr u64 USER_CODE_VA  = 0x200001000ULL;  // 8 GB + 4 KB
+        constexpr u64 USER_STACK_VA = 0x200002000ULL;  // 8 GB + 8 KB
+
+        bool ok = VMM::MapPageInto(user_cr3, USER_CODE_VA, code_phys,
+                                   VMM::PTE_PRESENT | VMM::PTE_USER);
+        KASSERT(ok);
+
+        // Map user stack page (writable + user)
+        ok = VMM::MapPageInto(user_cr3, USER_STACK_VA, stack_phys,
+                              VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+        KASSERT(ok);
+
+        // Stack top = top of the stack page (stack grows down)
+        u64 user_stack_top = USER_STACK_VA + PAGE_SIZE;
+
+        // Create user thread (entry=0x400000, user_rsp=0x800000)
+        KThread* uthread = PS::CreateUserThread(
+            uproc, "UserTest0", USER_CODE_VA, user_stack_top);
+        KASSERT(uthread);
+
+        KDBG_INFO("M6: user process CR3=0x%llx code_va=0x%llx stack_top=0x%llx",
+                  user_cr3, USER_CODE_VA, user_stack_top);
+
+        Sched::AddThread(uthread);
+
+        // Wait for the syscall to fire
+        while (!g_m6_syscall_ok) {
+            Sched::Schedule();
+        }
+
+        Debug::Print("[MicroNT] M6 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
     // Ready
     // ----------------------------------------------------------
     Debug::Print("[MicroNT] Ready\r\n");

@@ -78,6 +78,20 @@ u64  AllocKernelVA(usize pages);
 // Returns true if the fault was handled (demand-zero etc.).
 bool HandlePageFault(u64 cr2, u32 error_code);
 
+// ---- M6: per-process address space -------------------------
+// Create a new PML4 for a user process:
+//   - Lower half (PML4[0..255]) zeroed (fresh user address space)
+//   - Upper half (PML4[256..511]) copied from kernel PML4 (shared kernel map)
+// Returns physical address of new PML4, or 0 on failure.
+u64  CreateUserPml4();
+
+// Like MapPage but operates on an explicit PML4 (for mapping into a
+// process that is not currently active).  No invlpg needed.
+bool MapPageInto(u64 pml4_phys, u64 virt, u64 phys, u64 flags);
+
+// Switch the active address space (write CR3).
+void SwitchAddressSpace(u64 cr3_phys);
+
 } // namespace VMM
 
 // ============================================================

@@ -61,6 +61,7 @@ $ExpectedLines = @(
     '[MicroNT] M4 ready',
     '[MicroNT] Process manager initialized',
     '[MicroNT] M5 ready',
+    '[MicroNT] M6 ready',
     '[MicroNT] PE loader initialized',
     '[MicroNT] M2 ready',
     '[MicroNT] Ready'

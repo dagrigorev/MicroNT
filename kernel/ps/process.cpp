@@ -15,10 +15,13 @@ constexpr usize SWITCH_FRAME_SIZE = 7 * 8;  // 56 bytes
 // [RIP, CS, RFLAGS, RSP_user, SS] = 5 * 8 = 40 bytes
 constexpr usize IRETQ_FRAME_SIZE  = 5 * 8;  // 40 bytes
 
-// User-mode segment selectors
-constexpr u64 USER_CS = 0x1B;   // index 3, GDT, DPL=3
-constexpr u64 USER_SS = 0x23;   // index 4, GDT, DPL=3
-constexpr u64 USER_FLAGS = 0x202; // IF=1, reserved bit 1
+// User-mode segment selectors (must match GDT layout in gdt.cpp)
+// GDT[3]=user_data -> selector 0x18|3=0x1B
+// GDT[4]=user_code -> selector 0x20|3=0x23
+// STAR[63:48]=0x10: SYSRET  CS=0x10+16|3=0x23  SS=0x10+8|3=0x1B
+constexpr u64 USER_CS    = 0x23;   // GDT[4] | DPL=3
+constexpr u64 USER_SS    = 0x1B;   // GDT[3] | DPL=3
+constexpr u64 USER_FLAGS = 0x202;  // IF=1, reserved bit 1
 
 namespace {
 

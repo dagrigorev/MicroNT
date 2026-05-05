@@ -115,7 +115,15 @@ static void ScheduleInternal() {
     next->State = ThreadState::RUNNING;
     s_quantum   = QUANTUM_TICKS;
 
-    // Update TSS.RSP0 to top of new thread's kernel stack
+    // Switch address space if the new thread belongs to a different process
+    if (next->Process) {
+        u64 cur_cr3 = HAL::ReadCr3() & 0x000FFFFFFFFFF000ULL;
+        if (next->Process->Cr3 != cur_cr3) {
+            __asm__ volatile("mov %0, %%cr3" :: "r"(next->Process->Cr3) : "memory");
+        }
+    }
+
+    // Update TSS.RSP0 so hardware interrupts from ring-3 land on the right stack
     HAL::SetTSSRsp0(next->KernelStackBase + next->KernelStackSize);
 
     // Actual register/stack swap

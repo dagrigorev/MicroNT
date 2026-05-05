@@ -92,6 +92,12 @@ void PicInit();
 void PicSendEoi(u8 irq);
 void PicSetMask(u8 irq, bool masked);
 void SetTSSRsp0(u64 rsp0);   // update TSS.RSP0 (kernel stack for ring-3 -> ring-0)
+} // namespace HAL
+
+// Global: current TSS.RSP0 value. Read by syscall_entry.asm (no SWAPGS needed).
+extern u64 g_kernel_rsp0;
+
+namespace HAL {
 
 } // namespace HAL
 
