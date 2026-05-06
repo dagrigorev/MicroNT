@@ -28,6 +28,10 @@ namespace {
 static KProcess* s_system_process = nullptr;
 static KThread*  s_main_thread    = nullptr;
 
+// M19: global process registry
+static KProcess* s_proc_reg[32] = {};
+static u32       s_proc_count   = 0;
+
 static u32 s_next_pid = 0;
 static u32 s_next_tid = 0;
 
@@ -97,6 +101,7 @@ void Init() {
     s_main_thread->State          = ThreadState::RUNNING;
     s_main_thread->QuantumLeft    = Sched::QUANTUM_TICKS;
     s_main_thread->Process        = s_system_process;
+    s_system_process->thread_count = 1; // main kernel thread keeps System alive
     s_main_thread->KernelStackPtr = 0;  // set on first switch_context save
     const char* mn = "Main";
     for (int i = 0; i < 31 && mn[i]; ++i) s_main_thread->Name[i] = mn[i];
@@ -105,6 +110,7 @@ void Init() {
     // 3. Initialize scheduler and register main thread as current
     // ----------------------------------------------------------
     Sched::Init();
+    if (s_proc_count < 32) s_proc_reg[s_proc_count++] = s_system_process; // M19
     KDBG_INFO("PS: initialized (PID=%u TID=%u)", s_system_process->Pid, s_main_thread->Tid);
 }
 
@@ -117,6 +123,7 @@ KProcess* CreateProcess(const char* name, u64 cr3) {
     p->Cr3            = cr3 ? cr3 : (HAL::ReadCr3() & 0x000FFFFFFFFFF000ULL);
     p->UserHeapCursor = 0x500000000ULL;  // each process starts its own heap here
     if (name) for (int i = 0; i < 31 && name[i]; ++i) p->Name[i] = name[i];
+    if (s_proc_count < 32) s_proc_reg[s_proc_count++] = p; // M19 registry
     return p;
 }
 
@@ -259,5 +266,9 @@ KThread* CreateUserThread(KProcess* process, const char* name,
 
 KProcess* SystemProcess() { return s_system_process; }
 KThread*  MainThread()    { return s_main_thread; }
+
+
+u32 ProcessCount() { return s_proc_count; }
+KProcess* GetProcess(u32 i) { return i < s_proc_count ? s_proc_reg[i] : nullptr; }
 
 } // namespace PS

@@ -91,6 +91,7 @@ volatile u32 g_m15_ok        = 0;
 volatile u32 g_m16_ok        = 0;
 volatile u32 g_m17_ok        = 0;
 volatile u32 g_m18_ok        = 0;
+volatile u32 g_m19_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
@@ -250,6 +251,9 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 g_m17_ok = 1;
             if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='8')
                 g_m18_ok = 1;
+            // M19: ps output starts with "System"
+            if (got >= 6 && kbuf[0]=='S' && kbuf[1]=='y' && kbuf[2]=='s' && kbuf[3]=='t')
+                g_m19_ok = 1;
             // Mirror [USER] output to VGA console
             VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }
@@ -400,7 +404,7 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         char membuf[64] = {};
 
         if (a1 == 0) {
-            str = "MicroNT Version M14\r\n";
+            str = "MicroNT Version M19\r\n";
         } else if (a1 == 1) {
             // Memory stats: approximate from PMM free pages
             u64 free_kb = (u64)PMM::FreePages() * (PAGE_SIZE / 1024);
@@ -421,6 +425,29 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             *p = '\0';
             str = membuf;
         }
+        if (a1 == 2) {
+            // Process list: "name (pid)\n" for each non-exited process
+            usize total = 0;
+            for (u32 pi = 0; pi < PS::ProcessCount() && total + 64 < maxlen; ++pi) {
+                KProcess* proc = PS::GetProcess(pi);
+                if (!proc) continue;  // show all processes including exited
+                char line[64];
+                usize j = 0;
+                const char* nm = proc->Name;
+                while (nm[j] && j < 28) { line[j] = nm[j]; j++; }
+                line[j++] = ' '; line[j++] = '(';
+                u32 pid = proc->Pid; char pb[8]; usize pn=0;
+                if (!pid) { pb[pn++]='0'; }
+                else { u32 v=pid; while(v){pb[pn++]='0'+(v%10);v/=10;} }
+                while(pn>0) line[j++]=pb[--pn];
+                line[j++]=')'; line[j++]='\n'; line[j]=0;
+                for(usize k=0;k<j;++k) WriteUserByte(pml4,a2+total+k,(u8)line[k]);
+                total += j;
+            }
+            if (total < maxlen) WriteUserByte(pml4, a2+total, 0);
+            return (u64)total;
+        }
+
         if (!str) return 0;
 
         usize len = 0; while (str[len]) ++len;

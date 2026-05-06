@@ -121,6 +121,8 @@ KThread*  CreateUserThread(KProcess* process, const char* name,
 
 KProcess* SystemProcess();
 KThread*  MainThread();
+u32       ProcessCount();    // M19: number of registered processes
+KProcess* GetProcess(u32 i); // M19: get process by registry index
 
 } // namespace PS
 
