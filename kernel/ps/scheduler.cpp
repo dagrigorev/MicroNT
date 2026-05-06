@@ -139,8 +139,11 @@ static void ScheduleInternal() {
 // ============================================================
 // Tick - called from IRQ0 handler (interrupts already disabled)
 // ============================================================
+static void WakeSleepers();  // forward declaration
+
 void Tick() {
     if (!s_active || !s_current) return;
+    WakeSleepers();   // wake any threads whose sleep deadline has passed
     if (s_quantum > 0) {
         --s_quantum;
         if (s_quantum == 0) {
@@ -186,3 +189,58 @@ void UnblockThread(KThread* t) {
 }
 
 } // namespace Sched
+
+// ============================================================
+// Sleep list
+// ============================================================
+namespace Sched {
+
+static KThread* s_sleep_head = nullptr;
+
+void Sleep(u32 ms) {
+    if (ms == 0) return;
+    // Convert ms to PIT ticks (100 Hz: 1 tick = 10 ms)
+    u64 ticks_needed = ((u64)ms * 100 + 999) / 1000;  // round up
+    if (ticks_needed == 0) ticks_needed = 1;
+
+    HAL::DisableInterrupts();
+    KThread* t = s_current;
+    if (!t) { HAL::EnableInterrupts(); return; }
+
+    t->SleepUntil  = HAL::PitTicks() + ticks_needed;
+    t->SleepNext   = s_sleep_head;
+    s_sleep_head   = t;
+    t->State       = ThreadState::BLOCKED;
+
+    HAL::EnableInterrupts();
+    Sched::Schedule();  // switch away; returns when timer wakes us
+}
+
+} // namespace Sched (sleep additions)
+
+// ============================================================
+// Wake sleeping threads on each tick (called from Tick())
+// ============================================================
+namespace Sched {
+
+static void WakeSleepers() {
+    // Must be called with interrupts disabled (from Tick())
+    u64 now = HAL::PitTicks();
+    KThread** pp = &s_sleep_head;
+    while (*pp) {
+        KThread* t = *pp;
+        if (t->SleepUntil <= now) {
+            // Remove from sleep list
+            *pp = t->SleepNext;
+            t->SleepNext  = nullptr;
+            t->SleepUntil = 0;
+            // Add to ready queue (interrupts already disabled)
+            t->State = ThreadState::READY;
+            QueuePushBack(t);
+        } else {
+            pp = &t->SleepNext;
+        }
+    }
+}
+
+} // namespace Sched (waker)

@@ -42,10 +42,12 @@ constexpr u64 NT_CLOSE_HANDLE     = 8;
 constexpr u64 NT_QUERY_DIR        = 9;
 constexpr u64 NT_ALLOC_VM         = 10;
 constexpr u64 NT_FREE_VM          = 11;
-constexpr u64 NT_CREATE_EVENT     = 12;   // M12: NtCreateEvent(auto_reset)
-constexpr u64 NT_SET_EVENT        = 13;   // M12: NtSetEvent(handle)
-constexpr u64 NT_WAIT_SINGLE      = 14;   // M12: NtWaitForSingleObject(handle, timeout_ms)
-constexpr u64 NT_RESET_EVENT      = 15;   // M12: NtResetEvent(handle)
+constexpr u64 NT_CREATE_EVENT     = 12;
+constexpr u64 NT_SET_EVENT        = 13;
+constexpr u64 NT_WAIT_SINGLE      = 14;
+constexpr u64 NT_RESET_EVENT      = 15;
+constexpr u64 NT_CREATE_THREAD    = 16;   // M13: NtCreateThread(entry_va, arg)
+constexpr u64 NT_DELAY_EXECUTION  = 17;   // M13: NtDelayExecution(ms)
 
 // Command queue (pre-populated by kernel_main for M9 test)
 static const char* s_cmds[8] = {};
@@ -61,6 +63,7 @@ volatile u32 g_m8_write_ok   = 0;
 volatile u32 g_m9_ver_ok     = 0;
 volatile u32 g_m11_heap_ok   = 0;
 volatile u32 g_m12_sync_ok   = 0;
+volatile u32 g_m13_thread_ok = 0;
 
 // Simple event handle table (handle = index+1)
 constexpr usize EVENT_TABLE_SIZE = 32;
@@ -156,9 +159,12 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 Debug::Print(c);
             }
             g_m8_write_ok = 1;
-            // M9: check for version string
+            // M9: version string check
             if (got >= 7 && kbuf[0]=='M' && kbuf[1]=='i' && kbuf[2]=='c')
                 g_m9_ver_ok = 1;
+            // M13: thread completion check
+            if (got >= 9 && kbuf[0]=='T' && kbuf[1]=='H' && kbuf[2]=='R')
+                g_m13_thread_ok = 1;
         }
         return (u64)STATUS_SUCCESS;
     }
@@ -215,6 +221,48 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         SYNC::EventReset(s_events[idx]);
         return (u64)STATUS_SUCCESS;
     }
+
+    case NT_CREATE_THREAD: {
+        // a1=user_entry_va, a2=user_arg
+        // Allocates a user stack (1 page) and spawns a thread in the current process.
+        // Returns TID on success, 0 on failure.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        KProcess* proc = t->Process;
+
+        // Allocate user stack from heap
+        constexpr usize THREAD_STACK_PAGES = 4;
+        constexpr usize THREAD_STACK_SIZE  = THREAD_STACK_PAGES * PAGE_SIZE;
+
+        if (s_user_heap_cursor + THREAD_STACK_SIZE > USER_HEAP_MAX) return 0;
+        u64 stack_va = s_user_heap_cursor;
+        s_user_heap_cursor += THREAD_STACK_SIZE;
+
+        u64 pml4 = proc->Cr3;
+        u64 stack_flags = VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER;
+        for (usize i = 0; i < THREAD_STACK_PAGES; ++i) {
+            u64 phys = PMM::AllocPage();
+            if (!phys) return 0;
+            u8* p = reinterpret_cast<u8*>(phys);
+            for (usize j=0;j<PAGE_SIZE;++j) p[j]=0;
+            if (!VMM::MapPageInto(pml4, stack_va + i*PAGE_SIZE, phys, stack_flags)) return 0;
+        }
+        u64 stack_top = stack_va + THREAD_STACK_SIZE;
+
+        KThread* nt = PS::CreateUserThread(proc, "uthread", a1, stack_top, a2);
+        if (!nt) return 0;
+        Sched::AddThread(nt);
+        KDBG_INFO("SYSCALL: NtCreateThread(entry=0x%llx arg=0x%llx) -> TID %u", a1, a2, nt->Tid);
+        return (u64)nt->Tid;
+    }
+
+    case NT_DELAY_EXECUTION:
+        // a1 = milliseconds to sleep
+        if (a1 > 0) {
+            KDBG_TRACE("SYSCALL: NtDelayExecution(%llu ms)", a1);
+            Sched::Sleep((u32)a1);
+        }
+        return (u64)STATUS_SUCCESS;
 
     case NT_ALLOC_VM: {
         // a1=size (bytes, rounded up to pages), a2=protect (PAGE_READWRITE=4 etc.)

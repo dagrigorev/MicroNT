@@ -46,6 +46,13 @@ struct KThread {
 
     // Singly-linked list for event waiter queues
     KThread*    WaitNext;
+
+    // Sleep support (NtDelayExecution)
+    u64         SleepUntil;   // PIT tick deadline; 0 = not sleeping
+    KThread*    SleepNext;    // singly-linked sleep list
+
+    // User-mode thread argument (passed as RDI via extended IRETQ frame)
+    u64         UserArg;
 };
 
 // ============================================================
@@ -77,8 +84,10 @@ KThread* CreateKernelThread(KProcess* process, const char* name,
 
 // Allocate and set up a user thread (transitions to ring 3 via IRETQ).
 // user_stack_va: top of user stack (already mapped by caller).
+// user_arg: value passed to the thread in RDI (via extended IRETQ frame).
 KThread* CreateUserThread(KProcess* process, const char* name,
                            u64 user_entry_va, u64 user_stack_va,
+                           u64 user_arg = 0,
                            usize kernel_stack_size = 16384);
 
 // Mark current thread TERMINATED and yield. Does not return.
@@ -113,6 +122,9 @@ void     BlockCurrentThread();
 // Unblock a thread (mark READY and add to ready queue).
 // Safe to call with interrupts enabled or disabled.
 void     UnblockThread(KThread* t);
+
+// Put current thread to sleep for 'ms' milliseconds (uses PIT ticks).
+void     Sleep(u32 ms);
 
 } // namespace Sched
 

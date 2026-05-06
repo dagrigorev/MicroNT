@@ -175,40 +175,31 @@ KThread* CreateKernelThread(KProcess* process, const char* name,
 
 KThread* CreateUserThread(KProcess* process, const char* name,
                            u64 user_entry_va, u64 user_stack_va,
+                           u64 user_arg,
                            usize kernel_stack_size) {
     u64 stack_base = AllocStack(kernel_stack_size);
     if (!stack_base) return nullptr;
 
     u64 stack_top = stack_base + kernel_stack_size;
 
-    // Layout from top of kernel stack:
-    // IRETQ frame (5 slots): SS, RSP_user, RFLAGS, CS, RIP
-    //   slot 1 (top-8 ): SS = USER_SS
-    //   slot 2 (top-16): RSP_user = user_stack_va
-    //   slot 3 (top-24): RFLAGS = USER_FLAGS
-    //   slot 4 (top-32): CS = USER_CS
-    //   slot 5 (top-40): RIP = user_entry_va
-    // switch_context frame (7 slots below IRETQ frame):
-    //   slot 6 (top-48): return addr = user_thread_entry
-    //   slot 7 (top-56): rbp = 0
-    //   slot 8 (top-64): rbx = 0
-    //   slot 9 (top-72): r12 = 0
-    //   slot 10(top-80): r13 = 0
-    //   slot 11(top-88): r14 = 0
-    //   slot 12(top-96): r15 = 0
-    //   KernelStackPtr = top - 96
-    StackPoke(stack_top,  1, USER_SS);                                      // SS
-    StackPoke(stack_top,  2, user_stack_va);                                // RSP_user
-    StackPoke(stack_top,  3, USER_FLAGS);                                   // RFLAGS
-    StackPoke(stack_top,  4, USER_CS);                                      // CS
-    StackPoke(stack_top,  5, user_entry_va);                                // RIP
-    StackPoke(stack_top,  6, reinterpret_cast<u64>(user_thread_entry));    // ret addr
-    StackPoke(stack_top,  7, 0);   // rbp
-    StackPoke(stack_top,  8, 0);   // rbx
-    StackPoke(stack_top,  9, 0);   // r12
-    StackPoke(stack_top, 10, 0);   // r13
-    StackPoke(stack_top, 11, 0);   // r14
-    StackPoke(stack_top, 12, 0);   // r15
+    // Stack layout (top = lowest address, built top-down):
+    //   IRETQ frame (5 slots): SS, RSP_user, RFLAGS, CS, RIP
+    //   user_arg slot          (1 slot)    : popped as RDI by user_thread_entry
+    //   switch_context frame   (7 slots): r15=0..rbp=0, return=user_thread_entry
+    //   KernelStackPtr = stack_top - 13*8
+    StackPoke(stack_top,  1, USER_SS);
+    StackPoke(stack_top,  2, user_stack_va);
+    StackPoke(stack_top,  3, USER_FLAGS);
+    StackPoke(stack_top,  4, USER_CS);
+    StackPoke(stack_top,  5, user_entry_va);
+    StackPoke(stack_top,  6, user_arg);                                     // popped as RDI
+    StackPoke(stack_top,  7, reinterpret_cast<u64>(user_thread_entry));    // ret addr
+    StackPoke(stack_top,  8, 0);   // rbp
+    StackPoke(stack_top,  9, 0);   // rbx
+    StackPoke(stack_top, 10, 0);   // r12
+    StackPoke(stack_top, 11, 0);   // r13
+    StackPoke(stack_top, 12, 0);   // r14
+    StackPoke(stack_top, 13, 0);   // r15
 
     auto* t = static_cast<KThread*>(
         KernelHeap::AllocZeroed(sizeof(KThread), alignof(KThread)));
@@ -220,7 +211,7 @@ KThread* CreateUserThread(KProcess* process, const char* name,
     t->Process         = process ? process : s_system_process;
     t->KernelStackBase = stack_base;
     t->KernelStackSize = kernel_stack_size;
-    t->KernelStackPtr  = stack_top - SWITCH_FRAME_SIZE - IRETQ_FRAME_SIZE;
+    t->KernelStackPtr  = stack_top - SWITCH_FRAME_SIZE - IRETQ_FRAME_SIZE - 8; // -8 for user_arg slot
     t->EntryFn         = nullptr;  // entry is via IRETQ, not EntryFn
     t->EntryArg        = nullptr;
     t->Next            = nullptr;

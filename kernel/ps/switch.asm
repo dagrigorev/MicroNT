@@ -80,15 +80,16 @@ kernel_thread_entry:
 ; user_thread_entry
 ;
 ; Entry point for freshly created user threads.
-; Called via switch_context ret.  An IRETQ frame is already on
-; the stack (placed by CreateUserThread):
-;   [RSP+0 ] RIP_user
-;   [RSP+8 ] CS = 0x1B  (user code, DPL=3)
-;   [RSP+16] RFLAGS = 0x202  (IF=1, reserved bit)
-;   [RSP+24] RSP_user
-;   [RSP+32] SS = 0x23  (user data, DPL=3)
+; Called via switch_context ret.  Stack layout at entry:
+;   [RSP+0 ] user_arg       <- popped into RDI (argument to user entry)
+;   [RSP+8 ] RIP_user
+;   [RSP+16] CS = 0x23  (user code, DPL=3)
+;   [RSP+24] RFLAGS = 0x202  (IF=1, reserved bit)
+;   [RSP+32] RSP_user
+;   [RSP+40] SS = 0x1B  (user data, DPL=3)
 ; ============================================================
 global  user_thread_entry
 user_thread_entry:
-    sti                         ; ensure interrupts enabled (iretq restores RFLAGS too)
+    sti                         ; ensure interrupts enabled
+    pop     rdi                 ; user_arg -> RDI (first argument in SysV ABI)
     iretq
