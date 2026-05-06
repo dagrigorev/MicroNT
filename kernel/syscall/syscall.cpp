@@ -55,6 +55,14 @@ constexpr u64 NT_MAP_VIEW         = 21;
 constexpr u64 NT_UNMAP_VIEW       = 22;
 constexpr u64 NT_SET_EX_HANDLER   = 23;
 constexpr u64 NT_RAISE_EXCEPTION  = 24;
+constexpr u64 NT_CREATE_SEMAPHORE = 25;
+constexpr u64 NT_RELEASE_SEMAPHORE= 26;
+constexpr u64 NT_CREATE_MUTANT    = 27;
+constexpr u64 NT_RELEASE_MUTANT   = 28;
+constexpr u64 SEMA_HANDLE_BASE    = 0x100;
+constexpr u64 SEMA_MAX            = 8;
+constexpr u64 MUTANT_HANDLE_BASE  = 0x200;
+constexpr u64 MUTANT_MAX          = 8;
 
 // Command queue (pre-populated by kernel_main for M9 test)
 static const char* s_cmds[8] = {};
@@ -73,6 +81,7 @@ volatile u32 g_m12_sync_ok   = 0;
 volatile u32 g_m13_thread_ok = 0;
 volatile u32 g_m14_info_ok   = 0;
 volatile u32 g_m15_ok        = 0;
+volatile u32 g_m16_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
@@ -84,6 +93,20 @@ struct KSection {
     bool  in_use;
 };
 static KSection s_sections[8];
+
+struct KSema {
+    i32 count; i32 max_count;
+    KThread* head; KThread* tail;
+    bool in_use;
+};
+static KSema s_semas[8];
+
+struct KMutant {
+    KThread* owner; u32 depth;
+    KThread* head; KThread* tail;
+    bool in_use;
+};
+static KMutant s_mutants[8];
 
 // Simple event handle table (handle = index+1)
 constexpr usize EVENT_TABLE_SIZE = 32;
@@ -186,6 +209,8 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             // M15: "M15 OK" prefix
             if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='5')
                 g_m15_ok = 1;
+            if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='6')
+                g_m16_ok = 1;
         }
         return (u64)STATUS_SUCCESS;
     }
@@ -224,6 +249,38 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
     }
 
     case NT_WAIT_SINGLE: {
+        // Dispatch by handle range
+        if (a1 >= MUTANT_HANDLE_BASE) {
+            u64 i = a1 - MUTANT_HANDLE_BASE;
+            if (i >= MUTANT_MAX || !s_mutants[i].in_use) return (u64)STATUS_INVALID_HANDLE;
+            KMutant& m = s_mutants[i];
+            KThread* cur = Sched::CurrentThread();
+            HAL::DisableInterrupts();
+            if (!m.owner) { m.owner=cur; m.depth=1; HAL::EnableInterrupts(); }
+            else if (m.owner==cur) { ++m.depth; HAL::EnableInterrupts(); }
+            else {
+                cur->WaitNext=nullptr;
+                if (m.tail) m.tail->WaitNext=cur; else m.head=cur; m.tail=cur;
+                Sched::BlockCurrentThread(); HAL::EnableInterrupts(); Sched::Schedule();
+            }
+            return (u64)STATUS_SUCCESS;
+        }
+        if (a1 >= SEMA_HANDLE_BASE) {
+            u64 i = a1 - SEMA_HANDLE_BASE;
+            if (i >= SEMA_MAX || !s_semas[i].in_use) return (u64)STATUS_INVALID_HANDLE;
+            KSema& s = s_semas[i];
+            KThread* cur = Sched::CurrentThread();
+            HAL::DisableInterrupts();
+            if (s.count > 0) { --s.count; HAL::EnableInterrupts(); }
+            else if (a2==0) { HAL::EnableInterrupts(); return (u64)STATUS_TIMEOUT; }
+            else {
+                cur->WaitNext=nullptr;
+                if (s.tail) s.tail->WaitNext=cur; else s.head=cur; s.tail=cur;
+                Sched::BlockCurrentThread(); HAL::EnableInterrupts(); Sched::Schedule();
+            }
+            return (u64)STATUS_SUCCESS;
+        }
+        // Fall through to event handling
         // a1=handle, a2=timeout_ms
         usize idx = (usize)(a1 - 1);
         if (idx >= EVENT_TABLE_SIZE || !s_events[idx]) return (u64)STATUS_INVALID_HANDLE;
@@ -506,6 +563,61 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         if (!t) return (u64)STATUS_NOT_FOUND;
         t->ExceptionHandler = a1;
         KDBG_TRACE("SYSCALL: NtSetExceptionHandler(va=0x%llx)", a1);
+        return (u64)STATUS_SUCCESS;
+    }
+
+    case NT_CREATE_SEMAPHORE: {
+        i32 init=(i32)(u32)a1, maxc=(i32)(u32)a2;
+        if (init<0||maxc<=0||init>maxc) return 0;
+        for (u64 i=0;i<SEMA_MAX;++i) if (!s_semas[i].in_use) {
+            s_semas[i]={init,maxc,nullptr,nullptr,true};
+            KDBG_TRACE("SYSCALL: NtCreateSemaphore(%d/%d) -> 0x%llx",init,maxc,SEMA_HANDLE_BASE+i);
+            return SEMA_HANDLE_BASE+i;
+        }
+        return 0;
+    }
+
+    case NT_RELEASE_SEMAPHORE: {
+        u64 i=a1-SEMA_HANDLE_BASE;
+        if (a1<SEMA_HANDLE_BASE||i>=SEMA_MAX||!s_semas[i].in_use) return (u64)STATUS_INVALID_HANDLE;
+        KSema& s=s_semas[i]; i32 rel=(i32)(u32)a2; if(rel<=0)rel=1;
+        HAL::DisableInterrupts();
+        while (rel>0&&s.head) {
+            KThread* t=s.head; s.head=t->WaitNext; if(!s.head)s.tail=nullptr;
+            t->WaitNext=nullptr; Sched::UnblockThread(t); --rel;
+        }
+        i32 prev=s.count; s.count=(s.count+rel>s.max_count)?s.max_count:(s.count+rel);
+        HAL::EnableInterrupts();
+        KDBG_TRACE("SYSCALL: NtReleaseSemaphore prev=%d new=%d",prev,s.count);
+        return (u64)STATUS_SUCCESS;
+    }
+
+    case NT_CREATE_MUTANT: {
+        for (u64 i=0;i<MUTANT_MAX;++i) if (!s_mutants[i].in_use) {
+            s_mutants[i].owner  = a1 ? Sched::CurrentThread() : nullptr;
+            s_mutants[i].depth  = a1 ? 1u : 0u;
+            s_mutants[i].head   = s_mutants[i].tail = nullptr;
+            s_mutants[i].in_use = true;
+            KDBG_TRACE("SYSCALL: NtCreateMutant -> 0x%llx", MUTANT_HANDLE_BASE+i);
+            return MUTANT_HANDLE_BASE+i;
+        }
+        return 0;
+    }
+
+    case NT_RELEASE_MUTANT: {
+        u64 i=a1-MUTANT_HANDLE_BASE;
+        if (a1<MUTANT_HANDLE_BASE||i>=MUTANT_MAX||!s_mutants[i].in_use) return (u64)STATUS_INVALID_HANDLE;
+        KMutant& m=s_mutants[i]; KThread* cur=Sched::CurrentThread();
+        if (m.owner!=cur) return (u64)STATUS_MUTANT_NOT_OWNED;
+        HAL::DisableInterrupts();
+        if (--m.depth==0) {
+            if (m.head) {
+                KThread* t=m.head; m.head=t->WaitNext; if(!m.head)m.tail=nullptr;
+                t->WaitNext=nullptr; m.owner=t; m.depth=1; Sched::UnblockThread(t);
+            } else { m.owner=nullptr; }
+        }
+        HAL::EnableInterrupts();
+        KDBG_TRACE("SYSCALL: NtReleaseMutant depth=%u",m.depth);
         return (u64)STATUS_SUCCESS;
     }
 
