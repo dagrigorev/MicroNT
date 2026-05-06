@@ -46,8 +46,9 @@ constexpr u64 NT_CREATE_EVENT     = 12;
 constexpr u64 NT_SET_EVENT        = 13;
 constexpr u64 NT_WAIT_SINGLE      = 14;
 constexpr u64 NT_RESET_EVENT      = 15;
-constexpr u64 NT_CREATE_THREAD    = 16;   // M13: NtCreateThread(entry_va, arg)
-constexpr u64 NT_DELAY_EXECUTION  = 17;   // M13: NtDelayExecution(ms)
+constexpr u64 NT_CREATE_THREAD    = 16;
+constexpr u64 NT_DELAY_EXECUTION  = 17;
+constexpr u64 NT_QUERY_SYSINFO    = 18;   // M14: NtQuerySystemInformation(class, buf, size)
 
 // Command queue (pre-populated by kernel_main for M9 test)
 static const char* s_cmds[8] = {};
@@ -64,6 +65,7 @@ volatile u32 g_m9_ver_ok     = 0;
 volatile u32 g_m11_heap_ok   = 0;
 volatile u32 g_m12_sync_ok   = 0;
 volatile u32 g_m13_thread_ok = 0;
+volatile u32 g_m14_info_ok   = 0;
 
 // Simple event handle table (handle = index+1)
 constexpr usize EVENT_TABLE_SIZE = 32;
@@ -72,14 +74,11 @@ static KEvent* s_events[EVENT_TABLE_SIZE] = {};
 // Per-process user heap: bump allocator starting at 0x50000000.
 // Grows upward one PAGE_SIZE at a time.  Simple but correct for M11.
 // Each process gets its own range because each has its own PML4.
-constexpr u64 USER_HEAP_BASE = 0x500000000ULL;  // 20 GB: above 4GB identity map, no huge pages
-constexpr u64 USER_HEAP_MAX  = 0x580000000ULL; // 22 GB ceiling (2 GB heap space)
 
 // Returns current heap pointer, bumps it forward by 'pages' pages.
 // Stored per-KThread in EntryArg (repurposed as heap_cursor for now).
 // Actually simpler: use a global per-process cursor stored in KProcess.
 // For M11 we just keep a global since we run one user process at a time.
-static u64 s_user_heap_cursor = USER_HEAP_BASE;
 
 // Write one byte to user memory via explicit PML4 walk
 static bool WriteUserByte(u64 pml4, u64 user_va, u8 val) {
@@ -159,12 +158,14 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 Debug::Print(c);
             }
             g_m8_write_ok = 1;
-            // M9: version string check
             if (got >= 7 && kbuf[0]=='M' && kbuf[1]=='i' && kbuf[2]=='c')
                 g_m9_ver_ok = 1;
-            // M13: thread completion check
             if (got >= 9 && kbuf[0]=='T' && kbuf[1]=='H' && kbuf[2]=='R')
                 g_m13_thread_ok = 1;
+            // M14: "Memory:" prefix from NtQuerySystemInformation class 1
+            // "Memory: ..." -> kbuf[0]='M' [1]='e' [2]='m' [3]='o' [4]='r' [5]='y'
+            if (got >= 7 && kbuf[0]=='M' && kbuf[3]=='o' && kbuf[5]=='y')
+                g_m14_info_ok = 1;
         }
         return (u64)STATUS_SUCCESS;
     }
@@ -223,20 +224,16 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
     }
 
     case NT_CREATE_THREAD: {
-        // a1=user_entry_va, a2=user_arg
-        // Allocates a user stack (1 page) and spawns a thread in the current process.
-        // Returns TID on success, 0 on failure.
         KThread* t = Sched::CurrentThread();
         if (!t || !t->Process) return 0;
         KProcess* proc = t->Process;
-
-        // Allocate user stack from heap
         constexpr usize THREAD_STACK_PAGES = 4;
         constexpr usize THREAD_STACK_SIZE  = THREAD_STACK_PAGES * PAGE_SIZE;
 
-        if (s_user_heap_cursor + THREAD_STACK_SIZE > USER_HEAP_MAX) return 0;
-        u64 stack_va = s_user_heap_cursor;
-        s_user_heap_cursor += THREAD_STACK_SIZE;
+        constexpr u64 HEAP_MAX = 0x580000000ULL;
+        if (proc->UserHeapCursor + THREAD_STACK_SIZE > HEAP_MAX) return 0;
+        u64 stack_va = proc->UserHeapCursor;
+        proc->UserHeapCursor += THREAD_STACK_SIZE;
 
         u64 pml4 = proc->Cr3;
         u64 stack_flags = VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER;
@@ -248,12 +245,56 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             if (!VMM::MapPageInto(pml4, stack_va + i*PAGE_SIZE, phys, stack_flags)) return 0;
         }
         u64 stack_top = stack_va + THREAD_STACK_SIZE;
-
         KThread* nt = PS::CreateUserThread(proc, "uthread", a1, stack_top, a2);
         if (!nt) return 0;
         Sched::AddThread(nt);
         KDBG_INFO("SYSCALL: NtCreateThread(entry=0x%llx arg=0x%llx) -> TID %u", a1, a2, nt->Tid);
         return (u64)nt->Tid;
+    }
+
+    case NT_QUERY_SYSINFO: {
+        // a1=class, a2=user_buf_va, a3=buf_size
+        // Returns bytes written, or 0 on error.
+        // Class 0: kernel version string
+        // Class 1: memory stats string
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        u64 pml4 = t->Process->Cr3;
+        usize maxlen = (usize)(a3 > 256 ? 256 : a3);
+
+        const char* str = nullptr;
+        char membuf[64] = {};
+
+        if (a1 == 0) {
+            str = "MicroNT Version M14\r\n";
+        } else if (a1 == 1) {
+            // Memory stats: approximate from PMM free pages
+            u64 free_kb = (u64)PMM::FreePages() * (PAGE_SIZE / 1024);
+            u64 total_kb = free_kb + (u64)PMM::UsedPages() * (PAGE_SIZE / 1024);
+            // Simple itoa for KB values
+            auto itoa_k = [](char* buf, u64 v) -> usize {
+                if (v == 0) { buf[0]='0'; buf[1]='\0'; return 1; }
+                usize i=0; char tmp[20]; usize n=0;
+                while(v>0){tmp[n++]='0'+(v%10);v/=10;}
+                while(n>0) buf[i++]=tmp[--n]; buf[i]='\0'; return i;
+            };
+            char* p = membuf;
+            const char* pfx = "Memory: Free="; while(*pfx) *p++=*pfx++;
+            p += itoa_k(p, free_kb);
+            const char* mid = " KB Total="; while(*mid) *p++=*mid++;
+            p += itoa_k(p, total_kb);
+            const char* sfx = " KB\r\n"; while(*sfx) *p++=*sfx++;
+            *p = '\0';
+            str = membuf;
+        }
+        if (!str) return 0;
+
+        usize len = 0; while (str[len]) ++len;
+        if (len > maxlen) len = maxlen;
+
+        for (usize i=0; i<len; ++i) WriteUserByte(pml4, a2+i, (u8)str[i]);
+        WriteUserByte(pml4, a2+len, 0);
+        return (u64)len;
     }
 
     case NT_DELAY_EXECUTION:
@@ -265,23 +306,23 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         return (u64)STATUS_SUCCESS;
 
     case NT_ALLOC_VM: {
-        // a1=size (bytes, rounded up to pages), a2=protect (PAGE_READWRITE=4 etc.)
-        // Returns virtual address of allocated region, or 0 on failure.
         usize size = (usize)a1;
         if (size == 0) return 0;
         usize pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
 
         KThread* t = Sched::CurrentThread();
         if (!t || !t->Process) return 0;
-        u64 pml4 = t->Process->Cr3;
+        KProcess* proc = t->Process;
+        u64 pml4 = proc->Cr3;
 
-        // Bump-allocate from user heap range
-        u64 va = s_user_heap_cursor;
-        if (va + pages * PAGE_SIZE > USER_HEAP_MAX) {
-            KDBG_ERROR("SYSCALL: NtAllocVM: user heap exhausted");
+        // Per-process bump allocator (each process starts at 0x500000000)
+        constexpr u64 HEAP_MAX = 0x580000000ULL;
+        u64 va = proc->UserHeapCursor;
+        if (va + pages * PAGE_SIZE > HEAP_MAX) {
+            KDBG_ERROR("SYSCALL: NtAllocVM: per-process heap exhausted");
             return 0;
         }
-        s_user_heap_cursor += pages * PAGE_SIZE;
+        proc->UserHeapCursor += pages * PAGE_SIZE;
 
         // Map physical pages into the process PML4
         u64 flags = VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER;

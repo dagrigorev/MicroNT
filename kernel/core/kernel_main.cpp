@@ -20,6 +20,7 @@
 #include "../ldr/hello4_pe.h"
 #include "../ldr/hello5_pe.h"
 #include "../ldr/hello6_pe.h"
+#include "../ldr/hello7_pe.h"
 
 
 
@@ -31,6 +32,7 @@ extern volatile u32 g_m9_ver_ok;
 extern volatile u32 g_m11_heap_ok;
 extern volatile u32 g_m12_sync_ok;
 extern volatile u32 g_m13_thread_ok;
+extern volatile u32 g_m14_info_ok;
 extern u64 s_user_heap_cursor;
 
 extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
@@ -736,6 +738,47 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
         while (!g_m13_thread_ok) { Sched::Schedule(); }
         Debug::Print("[MicroNT] M13 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // M14: NtQuerySystemInformation + per-process heap
+    //  hello7.exe queries kernel version (class 0) and memory
+    //  stats (class 1), writes both via NtWriteFile.
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        g_m14_info_ok = 0;
+
+        u64 user_cr3 = VMM::CreateUserPml4();
+        KASSERT(user_cr3);
+        KProcess* proc = PS::CreateProcess("hello7.exe", user_cr3);
+        KASSERT(proc);
+
+        u64 ntdll_entry = 0;
+        NTSTATUS st = LDR::LoadAndRegister(
+            "ntdll.dll", s_ntdll_pe, s_ntdll_pe_size,
+            user_cr3, s_ntdll_image_base, &ntdll_entry);
+        KASSERT(NT_SUCCESS(st));
+
+        u64 entry_va = 0;
+        st = LDR::LoadPe(s_hello7_pe, s_hello7_pe_size,
+                          user_cr3, s_hello7_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        constexpr u64 USER_STACK_VA = 0xE000100000ULL;
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i=0;i<PAGE_SIZE;++i) reinterpret_cast<u8*>(stk_phys)[i]=0;
+        KASSERT(VMM::MapPageInto(user_cr3, USER_STACK_VA, stk_phys,
+                                  VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER));
+
+        KThread* uthread = PS::CreateUserThread(
+            proc, "hello7.exe!main", entry_va, USER_STACK_VA + PAGE_SIZE);
+        KASSERT(uthread);
+        Sched::AddThread(uthread);
+
+        while (!g_m14_info_ok) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] M14 ready\r\n");
     }
 
     // ----------------------------------------------------------

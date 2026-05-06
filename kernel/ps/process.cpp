@@ -112,9 +112,10 @@ KProcess* CreateProcess(const char* name, u64 cr3) {
     auto* p = static_cast<KProcess*>(
         KernelHeap::AllocZeroed(sizeof(KProcess), alignof(KProcess)));
     if (!p) return nullptr;
-    p->Pid   = s_next_pid++;
-    p->Flags = 0;
-    p->Cr3   = cr3 ? cr3 : (HAL::ReadCr3() & 0x000FFFFFFFFFF000ULL);
+    p->Pid            = s_next_pid++;
+    p->Flags          = 0;
+    p->Cr3            = cr3 ? cr3 : (HAL::ReadCr3() & 0x000FFFFFFFFFF000ULL);
+    p->UserHeapCursor = 0x500000000ULL;  // each process starts its own heap here
     if (name) for (int i = 0; i < 31 && name[i]; ++i) p->Name[i] = name[i];
     return p;
 }

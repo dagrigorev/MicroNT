@@ -62,6 +62,7 @@ struct KProcess {
     u32         Pid;
     u32         Flags;
     u64         Cr3;              // physical address of PML4
+    u64         UserHeapCursor;   // per-process bump allocator base (init = USER_HEAP_BASE)
     char        Name[32];
     i32         ExitStatus;
 };
