@@ -161,6 +161,7 @@ KThread* CreateKernelThread(KProcess* process, const char* name,
     t->QuantumLeft     = Sched::QUANTUM_TICKS;
     t->Priority        = THREAD_PRIORITY_NORMAL;
     t->Process         = process ? process : s_system_process;
+    if (t->Process) t->Process->thread_count++;
     t->KernelStackBase = stack_base;
     t->KernelStackSize = kernel_stack_size;
     t->EntryFn         = reinterpret_cast<void*>(entry_fn);
@@ -212,6 +213,7 @@ KThread* CreateUserThread(KProcess* process, const char* name,
     t->QuantumLeft     = Sched::QUANTUM_TICKS;
     t->Priority        = THREAD_PRIORITY_NORMAL;
     t->Process         = process ? process : s_system_process;
+    if (t->Process) t->Process->thread_count++;
     t->KernelStackBase = stack_base;
     t->KernelStackSize = kernel_stack_size;
     t->KernelStackPtr  = stack_top - SWITCH_FRAME_SIZE - IRETQ_FRAME_SIZE - 8; // -8 for user_arg slot
@@ -232,6 +234,21 @@ KThread* CreateUserThread(KProcess* process, const char* name,
         KDBG_TRACE("PS: thread '%s' TID=%u terminated (exit=%d)",
                    t->Name, t->Tid, exit_code);
         t->State = ThreadState::TERMINATED;
+    // M17: notify process exit when last thread terminates
+    KProcess* tp = t->Process;
+    if (tp && tp->thread_count > 0) {
+        if (--tp->thread_count == 0) {
+            tp->exited = true;
+            KThread* w = tp->exit_waiters;
+            tp->exit_waiters = nullptr;
+            while (w) {
+                KThread* nxt = w->WaitNext;
+                w->WaitNext = nullptr;
+                Sched::UnblockThread(w);
+                w = nxt;
+            }
+        }
+    }
     }
     // Force a context switch; Schedule() will not re-add this thread
     // because its State is TERMINATED.  Never returns.

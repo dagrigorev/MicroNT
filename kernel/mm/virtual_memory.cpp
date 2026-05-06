@@ -169,26 +169,36 @@ extern "C" bool VmmHandlePageFault(u64 cr2, u32 error_code) {
 namespace VMM {
 
 u64 CreateUserPml4() {
-    u64 phys = PMM::AllocPage();
-    if (!phys) return 0;
-
-    auto* new_pml4    = reinterpret_cast<u64*>(phys);
+    // M17: each user process gets its own PDPT for PML4[0] so that user-heap
+    // VAs (PDPT[20]+) are fully isolated between concurrent processes.
+    // PML4[1..511] are copied from the kernel (all zero in practice; kernel
+    // lives below 4 GB inside PML4[0]).
+    u64 new_pml4_phys = PMM::AllocPage();
+    if (!new_pml4_phys) return 0;
+    auto* new_pml4    = reinterpret_cast<u64*>(new_pml4_phys);
     auto* kernel_pml4 = reinterpret_cast<u64*>(s_pml4_phys);
-
-    // Copy all 512 entries so the kernel (at 0x100000 = PML4[0]) stays mapped.
-    // Then set PTE_USER on every present PML4 entry so that ring-3 page-table
-    // walks can traverse the intermediate tables.  Kernel pages themselves do
-    // NOT have PTE_USER in their PT entries, so ring-3 still faults on them.
-    // Only explicitly user-mapped pages (PTE_USER in the PTE) are accessible.
-    for (int i = 0; i < 512; ++i) {
+    for (int i = 0; i < 512; ++i) new_pml4[i] = 0;
+    // Propagate any kernel higher-half entries (currently none, but future-proof)
+    for (int i = 1; i < 512; ++i) {
         u64 e = kernel_pml4[i];
-        if (e & PTE_PRESENT)
-            e |= PTE_USER;  // allow ring-3 to traverse this PDPT
-        new_pml4[i] = e;
+        if (e & PTE_PRESENT) { e |= PTE_USER; new_pml4[i] = e; }
     }
 
-    KDBG_TRACE("VMM: CreateUserPml4 -> phys 0x%llx", phys);
-    return phys;
+    // Allocate a fresh PDPT, seeding it with the 0-4GB identity-map entries
+    // (PDPT[0]-PDPT[3]) from the kernel so ring-3 can execute kernel stubs and
+    // so syscall_entry (still running with user CR3) can reach kernel stacks.
+    u64 new_pdpt_phys = PMM::AllocPage();
+    if (!new_pdpt_phys) { PMM::FreePage(new_pml4_phys); return 0; }
+    auto* new_pdpt = reinterpret_cast<u64*>(new_pdpt_phys);
+    for (int i = 0; i < 512; ++i) new_pdpt[i] = 0;
+    if (kernel_pml4[0] & PTE_PRESENT) {
+        auto* k_pdpt = reinterpret_cast<u64*>(kernel_pml4[0] & PTE_ADDR_MASK);
+        for (int i = 0; i < 4; ++i) new_pdpt[i] = k_pdpt[i]; // 0-4 GB huge pages
+    }
+    new_pml4[0] = new_pdpt_phys | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+
+    KDBG_TRACE("VMM: CreateUserPml4 -> pml4=0x%llx pdpt=0x%llx", new_pml4_phys, new_pdpt_phys);
+    return new_pml4_phys;
 }
 
 bool MapPageInto(u64 pml4_phys, u64 virt, u64 phys, u64 flags) {

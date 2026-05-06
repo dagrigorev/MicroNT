@@ -129,3 +129,13 @@ void PutChar(u16 port, char c);
 char GetChar(u16 port);
 void Print(u16 port, const char* str);
 } // namespace Serial
+
+// ============================================================
+// VGA - 80x25 text console  (M17)
+// ============================================================
+namespace VGA {
+    void Init();
+    void Print(const char* s, u8 attr = 0x07);
+    void PrintUser(const char* buf, usize len);
+    void PutChar(char ch, u8 attr = 0x07);
+}

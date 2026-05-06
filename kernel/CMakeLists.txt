@@ -42,6 +42,7 @@ set(KERNEL_SOURCES
     hal/x64/idt.cpp
     hal/x64/irq.cpp
     hal/x64/pit.cpp
+    hal/x64/vga.cpp
     hal/x64/interrupts.asm
 
     # Core

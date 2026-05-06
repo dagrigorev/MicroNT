@@ -147,4 +147,16 @@ const void* GetData(const char* name, u64* size_out) {
     return nullptr;
 }
 
+
+// M17: kernel-only API - find a boot file by name, return raw data pointer
+const u8* FindFile(const char* name, usize* out_size) {
+    if (!s_bi || !name) return nullptr;
+    for (u32 i = 0; i < s_bi->boot_file_count; ++i) {
+        if (str_ieq(s_bi->boot_files[i].name, name)) {
+            if (out_size) *out_size = (usize)s_bi->boot_files[i].size;
+            return reinterpret_cast<const u8*>(s_bi->boot_files[i].phys_base);
+        }
+    }
+    return nullptr;
+}
 } // namespace VFS

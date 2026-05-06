@@ -41,4 +41,5 @@ void Close(i32 handle);
 i64  Read(i32 handle, u64 offset, void* buf, u64 len);
 i64  Size(i32 handle);
 const void* GetData(const char* name, u64* size_out);
+    const u8* FindFile(const char* name, usize* out_size);
 } // namespace VFS

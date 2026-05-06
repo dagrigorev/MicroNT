@@ -1,6 +1,8 @@
 // syscall.cpp - MicroNT M6 SYSCALL setup and dispatch
 
 #include "../include/hal.h"
+#include "../include/pe.h"
+#include "../ldr/ntdll_pe.h"
 #include "../include/debug.h"
 #include "../include/process.h"
 #include "../include/ntstatus.h"
@@ -59,6 +61,11 @@ constexpr u64 NT_CREATE_SEMAPHORE = 25;
 constexpr u64 NT_RELEASE_SEMAPHORE= 26;
 constexpr u64 NT_CREATE_MUTANT    = 27;
 constexpr u64 NT_RELEASE_MUTANT   = 28;
+constexpr u64 NT_CREATE_PROCESS   = 29;
+constexpr u64 NT_WAIT_MULTI       = 30;
+constexpr u64 NT_OPEN_EVENT       = 31;
+constexpr u64 PROC_HANDLE_BASE    = 0x300;
+constexpr u64 PROC_TABLE_SIZE     = 8;
 constexpr u64 SEMA_HANDLE_BASE    = 0x100;
 constexpr u64 SEMA_MAX            = 8;
 constexpr u64 MUTANT_HANDLE_BASE  = 0x200;
@@ -82,6 +89,7 @@ volatile u32 g_m13_thread_ok = 0;
 volatile u32 g_m14_info_ok   = 0;
 volatile u32 g_m15_ok        = 0;
 volatile u32 g_m16_ok        = 0;
+volatile u32 g_m17_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
@@ -107,6 +115,7 @@ struct KMutant {
     bool in_use;
 };
 static KMutant s_mutants[8];
+static KProcess* s_proc_table[PROC_TABLE_SIZE];  // M17 process handles
 
 // Simple event handle table (handle = index+1)
 constexpr usize EVENT_TABLE_SIZE = 32;
@@ -120,6 +129,12 @@ static KEvent* s_events[EVENT_TABLE_SIZE] = {};
 // Stored per-KThread in EntryArg (repurposed as heap_cursor for now).
 // Actually simpler: use a global per-process cursor stored in KProcess.
 // For M11 we just keep a global since we run one user process at a time.
+
+// Read one byte from user virtual address (explicit pml4)
+static u8 ReadUserByte(u64 pml4, u64 va) {
+    u64 phys = VMM::TranslateInPml4(pml4, va);
+    return phys ? *reinterpret_cast<u8*>(phys) : 0;
+}
 
 // Write one byte to user memory via explicit PML4 walk
 static bool WriteUserByte(u64 pml4, u64 user_va, u8 val) {
@@ -211,6 +226,10 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 g_m15_ok = 1;
             if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='6')
                 g_m16_ok = 1;
+            if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='7')
+                g_m17_ok = 1;
+            // Mirror [USER] output to VGA console
+            VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }
         return (u64)STATUS_SUCCESS;
     }
@@ -250,6 +269,22 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
 
     case NT_WAIT_SINGLE: {
         // Dispatch by handle range
+        if (a1 >= PROC_HANDLE_BASE) {
+            u64 i = a1 - PROC_HANDLE_BASE;
+            if (i >= PROC_TABLE_SIZE || !s_proc_table[i]) return (u64)STATUS_INVALID_HANDLE;
+            KProcess* proc = s_proc_table[i];
+            if (proc->exited) return (u64)STATUS_SUCCESS;
+            if (a2 == 0) return (u64)STATUS_TIMEOUT;
+            // Block until process exits
+            KThread* cur = Sched::CurrentThread();
+            HAL::DisableInterrupts();
+            cur->WaitNext = proc->exit_waiters;
+            proc->exit_waiters = cur;
+            Sched::BlockCurrentThread();
+            HAL::EnableInterrupts();
+            Sched::Schedule();
+            return (u64)STATUS_SUCCESS;
+        }
         if (a1 >= MUTANT_HANDLE_BASE) {
             u64 i = a1 - MUTANT_HANDLE_BASE;
             if (i >= MUTANT_MAX || !s_mutants[i].in_use) return (u64)STATUS_INVALID_HANDLE;
@@ -619,6 +654,121 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         HAL::EnableInterrupts();
         KDBG_TRACE("SYSCALL: NtReleaseMutant depth=%u",m.depth);
         return (u64)STATUS_SUCCESS;
+    }
+
+    case NT_CREATE_PROCESS: {
+        // a1=name_va, a2=name_len -> loads PE from VFS, returns process handle
+        KThread* ct = Sched::CurrentThread();
+        if (!ct || !ct->Process) return 0;
+        char fname[64] = {};
+        usize flen = (usize)(a2 > 63 ? 63 : a2);
+        for (usize i=0;i<flen;++i) fname[i]=(char)ReadUserByte(ct->Process->Cr3, a1+i);
+
+        usize fsize=0;
+        const u8* fdata = VFS::FindFile(fname, &fsize);
+        if (!fdata || !fsize) { KDBG_ERROR("SYSCALL: NtCreateProcess: '%s' not found",fname); return 0; }
+
+        u64 ccr3 = VMM::CreateUserPml4();
+        if (!ccr3) return 0;
+        KProcess* cp = PS::CreateProcess(fname, ccr3);
+        if (!cp) return 0;
+
+        // Load ntdll into child (harmless if child has no imports)
+        u64 _dummy=0;
+        LDR::LoadAndRegister("ntdll.dll", s_ntdll_pe, s_ntdll_pe_size, ccr3, s_ntdll_image_base, &_dummy);
+
+        // Read child PE's preferred ImageBase from its own Optional Header
+        u64 image_base = 0;
+        if (fsize >= 64) {
+            u32 lfanew = *reinterpret_cast<const u32*>(fdata + 60);
+            // PE32+: signature(4) + COFF(20) + magic(2) at lfanew; ImageBase at +24 from opt hdr
+            if (lfanew + 4 + 20 + 32 <= fsize &&
+                fdata[lfanew]=='P' && fdata[lfanew+1]=='E') {
+                image_base = *reinterpret_cast<const u64*>(fdata + lfanew + 4 + 20 + 24);
+            }
+        }
+        if (!image_base) image_base = 0x500000000ULL; // fallback
+
+        // Load child PE
+        u64 entry_va=0;
+        NTSTATUS st = LDR::LoadPe(fdata, fsize, ccr3, image_base, &entry_va);
+        if (!NT_SUCCESS(st)) { KDBG_ERROR("SYSCALL: NtCreateProcess: LoadPe failed"); return 0; }
+
+        // Allocate child stack well ABOVE image_base to avoid overlapping PE sections.
+        // (UserHeapCursor starts at 0x500000000; PE sections also map there starting
+        //  at image_base + RVA.  Using image_base + 0x100000 gives 1MB of headroom.)
+        u64 stack_base = image_base + 0x100000ULL;
+        constexpr usize CSTK=4;
+        u64 fl=VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER;
+        for (usize i=0;i<CSTK;++i) {
+            u64 pp=PMM::AllocPage(); if(!pp)return 0;
+            for(usize j=0;j<PAGE_SIZE;++j)((u8*)pp)[j]=0;
+            if(!VMM::MapPageInto(ccr3,stack_base+i*PAGE_SIZE,pp,fl))return 0;
+        }
+        KThread* ct2=PS::CreateUserThread(cp,fname,entry_va,stack_base+CSTK*PAGE_SIZE);
+        if(!ct2)return 0;
+        Sched::AddThread(ct2);
+
+        for (u64 i=0;i<PROC_TABLE_SIZE;++i) if(!s_proc_table[i]) {
+            s_proc_table[i]=cp;
+            KDBG_INFO("SYSCALL: NtCreateProcess('%s') -> handle 0x%llx",fname,PROC_HANDLE_BASE+i);
+            return PROC_HANDLE_BASE+i;
+        }
+        return 0;
+    }
+
+    case NT_WAIT_MULTI: {
+        // a1=count, a2=handles_va, a3=wait_all, a4=timeout_ms
+        u32 cnt=(u32)a1; if(!cnt||cnt>8)return (u64)STATUS_INVALID_PARAMETER;
+        KThread* wt=Sched::CurrentThread(); if(!wt||!wt->Process)return (u64)STATUS_INVALID_PARAMETER;
+        u64 pml4=wt->Process->Cr3;
+        u64 hs[8]={};
+        for(u32 i=0;i<cnt;++i){
+            u64 h=0;
+            for(u32 b=0;b<8;++b) h|=(u64)ReadUserByte(pml4,a2+i*8+b)<<(b*8);
+            hs[i]=h;
+        }
+        bool wall=(a3!=0);
+        // poll loop (simplified wait-any / wait-all)
+        u64 deadline=(a4==(u64)-1)?(u64)-1:(u64)HAL::PitTicks()+(u64)a4*100/1000+1;
+        bool acquired[8]={};
+        for(;;){
+            u32 done=0;
+            for(u32 i=0;i<cnt;++i){
+                if(acquired[i]){++done;continue;}
+                // non-blocking check for process handles (simplest)
+                if(hs[i]>=PROC_HANDLE_BASE){
+                    u64 idx2=hs[i]-PROC_HANDLE_BASE;
+                    if(idx2<PROC_TABLE_SIZE&&s_proc_table[idx2]&&s_proc_table[idx2]->exited){
+                        acquired[i]=true;++done;
+                    }
+                } else {
+                    // For events/sema/mutant: check via NtWaitForSingleObject with timeout=0
+                    // For now mark as done if handle==0 (ignore invalid)
+                    if(!hs[i]){acquired[i]=true;++done;}
+                }
+            }
+            if(!wall && done>0){ for(u32 i=0;i<cnt;++i)if(acquired[i])return i; }
+            if( wall && done==cnt) return (u64)STATUS_SUCCESS;
+            if(a4==0)return (u64)STATUS_TIMEOUT;
+            if(deadline!=(u64)-1&&(u64)HAL::PitTicks()>=deadline)return (u64)STATUS_TIMEOUT;
+            Sched::Sleep(10);
+        }
+    }
+
+    case NT_OPEN_EVENT: {
+        // a1=name_va, a2=name_len -> find existing named event, return handle
+        KThread* ot=Sched::CurrentThread(); if(!ot||!ot->Process)return 0;
+        char oname[48]={};
+        usize olen=(usize)(a2>47?47:a2);
+        for(usize i=0;i<olen;++i) oname[i]=(char)ReadUserByte(ot->Process->Cr3,a1+i);
+        for(usize i=0;i<EVENT_TABLE_SIZE;++i)
+            if(s_events[i]&&s_events[i]->name[0]){
+                const char* en=s_events[i]->name; bool match=true;
+                for(usize j=0;j<olen;++j)if(en[j]!=oname[j]){match=false;break;}
+                if(match&&!en[olen]) return (u64)(i+1);
+            }
+        return 0;
     }
 
     case NT_RAISE_EXCEPTION: {

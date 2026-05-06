@@ -11,9 +11,10 @@ struct KThread;
 // ============================================================
 struct KEvent {
     volatile bool  signaled;
-    bool           auto_reset;   // true: reset after first successful wait
+    bool           auto_reset;
     u32            _pad;
-    KThread*       waiters;      // head of singly-linked waiter list (via WaitNext)
+    KThread*       waiters;
+    char           name[48];    // M17: optional name for NtOpenEvent lookup
 };
 
 namespace SYNC {

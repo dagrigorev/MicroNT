@@ -1,5 +1,5 @@
 #pragma once
-// process.h - MicroNT M5-M15: Process and Thread management
+// process.h -- MicroNT M5-M17
 
 #include "ntdef.h"
 #include "ntstatus.h"
@@ -15,7 +15,7 @@ enum class ThreadState : u32 {
 };
 
 // ============================================================
-// Thread priority levels  (M15)
+// Priority levels  (M15)
 // ============================================================
 constexpr u32 THREAD_PRIORITY_LOW    = 0;
 constexpr u32 THREAD_PRIORITY_NORMAL = 1;
@@ -23,91 +23,99 @@ constexpr u32 THREAD_PRIORITY_HIGH   = 2;
 constexpr u32 THREAD_PRIORITY_COUNT  = 3;
 
 // ============================================================
-// Free VA region — per-process free list entry  (M15)
+// Free VA region -- per-process allocator free list  (M15)
 // ============================================================
 struct FreeRegion { u64 va; u32 pages; };
 constexpr usize FREE_LIST_SLOTS = 16;
 
 // ============================================================
-// KThread - Kernel Thread Control Block
-//
-// CRITICAL: KernelStackPtr MUST remain at offset 0.
-// switch_context (switch.asm) uses [rdi+0] and [rsi+0] directly.
+// KProcess forward-declared so KThread can reference it
 // ============================================================
 struct KProcess;
 
+// ============================================================
+// KThread -- Kernel Thread Control Block
+//
+// CRITICAL: KernelStackPtr MUST stay at offset 0.
+// switch_context (switch.asm) reads/writes [rdi+0] / [rsi+0].
+// ============================================================
 struct KThread {
-    u64         KernelStackPtr;   // offset 0: saved RSP (set by switch_context)
+    u64         KernelStackPtr;     // offset 0: saved kernel RSP
 
     u32         Tid;
     ThreadState State;
-    u32         QuantumLeft;      // remaining ticks before preemption
+    u32         QuantumLeft;
     u32         Flags;
+    u32         Priority;           // M15: THREAD_PRIORITY_*
 
-    // M15: scheduling priority (THREAD_PRIORITY_*)
-    u32         Priority;
+    KProcess*   Process;
 
-    KProcess*   Process;          // owning process
+    u64         KernelStackBase;
+    usize       KernelStackSize;
 
-    u64         KernelStackBase;  // bottom of kernel stack allocation (phys)
-    usize       KernelStackSize;  // size in bytes
-
-    void*       EntryFn;          // original entry function (for kernel threads)
+    void*       EntryFn;
     void*       EntryArg;
 
     char        Name[32];
 
-    // Intrusive doubly-linked list (ready queue)
+    // Ready-queue links (doubly-linked via sentinel)
     KThread*    Next;
     KThread*    Prev;
 
-    // Singly-linked list for event waiter queues
+    // Event / semaphore / mutant wait queue (singly-linked)
     KThread*    WaitNext;
 
-    // Sleep support (NtDelayExecution)
-    u64         SleepUntil;   // PIT tick deadline; 0 = not sleeping
-    KThread*    SleepNext;    // singly-linked sleep list
+    // Sleep support  (M13)
+    u64         SleepUntil;
+    KThread*    SleepNext;
 
-    // User-mode thread argument (passed as RDI via extended IRETQ frame)
+    // User-mode argument passed via extended IRETQ frame  (M13)
     u64         UserArg;
 
-    // M15: exception handler VA (0 = none registered)
+    // M15: exception handler VA (0 = none)
     u64         ExceptionHandler;
 };
 
 // ============================================================
-// KProcess - Kernel Process Control Block
+// KProcess -- Kernel Process Control Block
 // ============================================================
 struct KProcess {
     u32         Pid;
     u32         Flags;
-    u64         Cr3;              // physical address of PML4
-    u64         UserHeapCursor;   // per-process bump allocator (init = 0x500000000)
+    u64         Cr3;                // PML4 physical address
+    u64         UserHeapCursor;     // bump allocator base (init 0x500000000)
     char        Name[32];
     i32         ExitStatus;
 
-    // M15: per-process free list for NtFreeVirtualMemory
+    // M15: per-process free list
     FreeRegion  UserFreeList[FREE_LIST_SLOTS];
+
+    // M17: process lifetime tracking
+    u32         thread_count;
+    bool        exited;
+    KThread*    exit_waiters;       // threads waiting for this process to exit
 };
 
 // ============================================================
-// PS - Process/Thread creation
+// PS namespace -- process/thread creation
 // ============================================================
 namespace PS {
 
-void     Init();
+constexpr u32 QUANTUM_TICKS = 5;   // exposed so scheduler can use it
+
+void      Init();
 
 KProcess* CreateProcess(const char* name, u64 cr3 = 0);
 void      DestroyProcess(KProcess* process);
 
-KThread* CreateKernelThread(KProcess* process, const char* name,
-                             void (*entry_fn)(void*), void* arg,
-                             usize kernel_stack_size = 16384);
+KThread*  CreateKernelThread(KProcess* process, const char* name,
+                               void (*entry_fn)(void*), void* arg,
+                               usize kernel_stack_size = 16384);
 
-KThread* CreateUserThread(KProcess* process, const char* name,
-                           u64 user_entry_va, u64 user_stack_va,
-                           u64 user_arg = 0,
-                           usize kernel_stack_size = 16384);
+KThread*  CreateUserThread(KProcess* process, const char* name,
+                             u64 user_entry_va, u64 user_stack_va,
+                             u64 user_arg = 0,
+                             usize kernel_stack_size = 16384);
 
 [[noreturn]] void TerminateCurrentThread(i32 exit_code = 0);
 
@@ -117,7 +125,7 @@ KThread*  MainThread();
 } // namespace PS
 
 // ============================================================
-// Sched - Priority scheduler  (M15: 3-level priority queues)
+// Sched namespace -- priority scheduler  (M15: 3-level queues)
 // ============================================================
 namespace Sched {
 
@@ -138,7 +146,7 @@ void     Sleep(u32 ms);
 } // namespace Sched
 
 // ============================================================
-// Assembly trampolines (switch.asm)
+// Assembly trampolines (ps/switch.asm)
 // ============================================================
 extern "C" {
     void switch_context(KThread* prev, KThread* next);
