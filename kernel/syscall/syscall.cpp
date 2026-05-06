@@ -90,6 +90,7 @@ volatile u32 g_m14_info_ok   = 0;
 volatile u32 g_m15_ok        = 0;
 volatile u32 g_m16_ok        = 0;
 volatile u32 g_m17_ok        = 0;
+volatile u32 g_m18_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
@@ -185,18 +186,37 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         return (u64)STATUS_SUCCESS;
 
     case NT_READ_LINE: {
-        // a1=user_buf_va, a2=max_len. Returns bytes written (0=no more commands).
-        if (s_cmd_idx >= s_cmd_count) return 0;
-        const char* cmd = s_cmds[s_cmd_idx++];
-        usize len = 0; while (cmd[len]) ++len;
-        if (len >= (usize)a2) len = (usize)a2 - 1;
+        // a1=user_buf_va, a2=max_len. Returns bytes written (0=end or error).
+        // Pre-programmed command queue takes priority; keyboard fills in when empty.
         KThread* t = Sched::CurrentThread();
         if (!t || !t->Process) return 0;
         u64 pml4 = t->Process->Cr3;
-        for (usize i=0; i<len; ++i) WriteUserByte(pml4, a1+i, (u8)cmd[i]);
-        WriteUserByte(pml4, a1+len, 0);  // null terminate
-        KDBG_TRACE("SYSCALL: NtReadLine -> '%s' (%llu bytes)", cmd, (u64)len);
-        return (u64)len;
+
+        if (s_cmd_idx < s_cmd_count) {
+            // Serve from pre-programmed queue
+            const char* cmd = s_cmds[s_cmd_idx++];
+            usize len = 0; while (cmd[len]) ++len;
+            if (len >= (usize)a2) len = (usize)a2 - 1;
+            for (usize i=0;i<len;++i) WriteUserByte(pml4, a1+i, (u8)cmd[i]);
+            WriteUserByte(pml4, a1+len, 0);
+            KDBG_TRACE("SYSCALL: NtReadLine (queue) -> '%s'", cmd);
+            return (u64)len;
+        }
+
+        // Keyboard fallback: collect chars until newline or buffer full
+        usize maxlen = (usize)(a2 > 1 ? a2-1 : 1);
+        usize n = 0;
+        while (n < maxlen) {
+            char ch = 0;
+            while (!KB::TryRead(&ch)) { Sched::Sleep(10); }
+            if (ch == '\b') { if (n>0) --n; continue; }
+            WriteUserByte(pml4, a1+n, (u8)ch);
+            if (ch == '\n') { ++n; break; }
+            ++n;
+        }
+        WriteUserByte(pml4, a1+n, 0);
+        VGA::PutChar('\n', 0x07);   // move to next line on screen
+        return (u64)n;
     }
 
     case NT_WRITE_FILE: {
@@ -228,6 +248,8 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 g_m16_ok = 1;
             if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='7')
                 g_m17_ok = 1;
+            if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='8')
+                g_m18_ok = 1;
             // Mirror [USER] output to VGA console
             VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }

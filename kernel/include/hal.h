@@ -139,3 +139,12 @@ namespace VGA {
     void PrintUser(const char* buf, usize len);
     void PutChar(char ch, u8 attr = 0x07);
 }
+
+// ============================================================
+// KB - PS/2 keyboard driver  (M18)
+// ============================================================
+namespace KB {
+    void Init();
+    bool TryRead(char* out);   // non-blocking; returns false if buffer empty
+    void HandleIrq(u8 irq);
+}
