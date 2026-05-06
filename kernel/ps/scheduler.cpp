@@ -9,11 +9,9 @@ namespace Sched {
 // ============================================================
 // State
 // ============================================================
-// Sentinel node for the circular doubly-linked ready queue.
-// sentinel.Next = head (first ready thread)
-// sentinel.Prev = tail (last ready thread)
-// Empty queue: sentinel.Next == sentinel.Prev == &s_sentinel
-static KThread  s_sentinel;
+// M15: Three priority-level circular ready queues (HIGH=2, NORMAL=1, LOW=0).
+// Each queue has its own sentinel node.
+static KThread  s_sentinel[THREAD_PRIORITY_COUNT];
 static KThread* s_current  = nullptr;
 static bool     s_active   = false;
 static u32      s_quantum  = QUANTUM_TICKS;
@@ -21,11 +19,17 @@ static u32      s_quantum  = QUANTUM_TICKS;
 // ============================================================
 // Internal helpers (interrupts must be disabled by caller)
 // ============================================================
+static inline u32 ClampPri(u32 p) {
+    return p < THREAD_PRIORITY_COUNT ? p : THREAD_PRIORITY_NORMAL;
+}
+
 static void QueuePushBack(KThread* t) {
-    t->Next              = &s_sentinel;
-    t->Prev              = s_sentinel.Prev;
-    s_sentinel.Prev->Next = t;
-    s_sentinel.Prev       = t;
+    u32 pri = ClampPri(t->Priority);
+    KThread* sen = &s_sentinel[pri];
+    t->Next       = sen;
+    t->Prev       = sen->Prev;
+    sen->Prev->Next = t;
+    sen->Prev       = t;
 }
 
 static void QueueRemove(KThread* t) {
@@ -37,19 +41,27 @@ static void QueueRemove(KThread* t) {
 }
 
 static KThread* QueuePop() {
-    if (s_sentinel.Next == &s_sentinel) return nullptr;  // empty
-    KThread* t = s_sentinel.Next;
-    QueueRemove(t);
-    return t;
+    // Scan from highest priority to lowest; return first available thread.
+    for (i32 pri = THREAD_PRIORITY_COUNT - 1; pri >= 0; --pri) {
+        KThread* sen = &s_sentinel[pri];
+        if (sen->Next != sen) {         // non-empty
+            KThread* t = sen->Next;
+            QueueRemove(t);
+            return t;
+        }
+    }
+    return nullptr;
 }
 
 // ============================================================
 // Init / Start
 // ============================================================
 void Init() {
-    // Set up empty circular sentinel list
-    s_sentinel.Next = &s_sentinel;
-    s_sentinel.Prev = &s_sentinel;
+    // Set up three empty circular sentinel lists (one per priority)
+    for (u32 i = 0; i < THREAD_PRIORITY_COUNT; ++i) {
+        s_sentinel[i].Next = &s_sentinel[i];
+        s_sentinel[i].Prev = &s_sentinel[i];
+    }
 
     // s_current = the main thread (set by PS::Init which calls us)
     // We need PS::MainThread() here, but process.h declares both.

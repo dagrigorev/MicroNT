@@ -159,6 +159,7 @@ KThread* CreateKernelThread(KProcess* process, const char* name,
     t->Tid             = s_next_tid++;
     t->State           = ThreadState::READY;
     t->QuantumLeft     = Sched::QUANTUM_TICKS;
+    t->Priority        = THREAD_PRIORITY_NORMAL;
     t->Process         = process ? process : s_system_process;
     t->KernelStackBase = stack_base;
     t->KernelStackSize = kernel_stack_size;
@@ -209,6 +210,7 @@ KThread* CreateUserThread(KProcess* process, const char* name,
     t->Tid             = s_next_tid++;
     t->State           = ThreadState::READY;
     t->QuantumLeft     = Sched::QUANTUM_TICKS;
+    t->Priority        = THREAD_PRIORITY_NORMAL;
     t->Process         = process ? process : s_system_process;
     t->KernelStackBase = stack_base;
     t->KernelStackSize = kernel_stack_size;

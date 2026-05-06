@@ -48,7 +48,13 @@ constexpr u64 NT_WAIT_SINGLE      = 14;
 constexpr u64 NT_RESET_EVENT      = 15;
 constexpr u64 NT_CREATE_THREAD    = 16;
 constexpr u64 NT_DELAY_EXECUTION  = 17;
-constexpr u64 NT_QUERY_SYSINFO    = 18;   // M14: NtQuerySystemInformation(class, buf, size)
+constexpr u64 NT_QUERY_SYSINFO    = 18;
+constexpr u64 NT_SET_THREAD_INFO  = 19;
+constexpr u64 NT_CREATE_SECTION   = 20;
+constexpr u64 NT_MAP_VIEW         = 21;
+constexpr u64 NT_UNMAP_VIEW       = 22;
+constexpr u64 NT_SET_EX_HANDLER   = 23;
+constexpr u64 NT_RAISE_EXCEPTION  = 24;
 
 // Command queue (pre-populated by kernel_main for M9 test)
 static const char* s_cmds[8] = {};
@@ -66,6 +72,18 @@ volatile u32 g_m11_heap_ok   = 0;
 volatile u32 g_m12_sync_ok   = 0;
 volatile u32 g_m13_thread_ok = 0;
 volatile u32 g_m14_info_ok   = 0;
+volatile u32 g_m15_ok        = 0;
+
+// M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
+extern "C" volatile u64 g_pending_exception_va = 0;
+
+// M15: shared memory section table
+struct KSection {
+    u64   phys[32];
+    usize page_count;
+    bool  in_use;
+};
+static KSection s_sections[8];
 
 // Simple event handle table (handle = index+1)
 constexpr usize EVENT_TABLE_SIZE = 32;
@@ -162,10 +180,12 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 g_m9_ver_ok = 1;
             if (got >= 9 && kbuf[0]=='T' && kbuf[1]=='H' && kbuf[2]=='R')
                 g_m13_thread_ok = 1;
-            // M14: "Memory:" prefix from NtQuerySystemInformation class 1
-            // "Memory: ..." -> kbuf[0]='M' [1]='e' [2]='m' [3]='o' [4]='r' [5]='y'
+            // M14: "Memory:" prefix
             if (got >= 7 && kbuf[0]=='M' && kbuf[3]=='o' && kbuf[5]=='y')
                 g_m14_info_ok = 1;
+            // M15: "M15 OK" prefix
+            if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='5')
+                g_m15_ok = 1;
         }
         return (u64)STATUS_SUCCESS;
     }
@@ -412,11 +432,102 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         return cb_args.pos - a1;
     }
 
+    case NT_SET_THREAD_INFO: {
+        KThread* target = Sched::CurrentThread();
+        if (!target) return (u64)STATUS_NOT_FOUND;
+        if (a2 == 0) {
+            u32 pri = (u32)a3;
+            if (pri >= THREAD_PRIORITY_COUNT) return (u64)STATUS_INVALID_PARAMETER;
+            target->Priority = pri;
+            KDBG_TRACE("SYSCALL: NtSetInformationThread: priority -> %u", pri);
+        }
+        return (u64)STATUS_SUCCESS;
+    }
+
+    case NT_CREATE_SECTION: {
+        usize sz    = (usize)a1;
+        usize pages = (sz + PAGE_SIZE - 1) / PAGE_SIZE;
+        if (!sz || pages > 32) return 0;
+        for (usize i = 0; i < 8; ++i) {
+            if (!s_sections[i].in_use) {
+                s_sections[i].page_count = pages;
+                s_sections[i].in_use     = true;
+                for (usize j = 0; j < pages; ++j) {
+                    u64 phys = PMM::AllocPage();
+                    if (!phys) { s_sections[i].in_use = false; return 0; }
+                    u8* p = reinterpret_cast<u8*>(phys);
+                    for (usize k = 0; k < PAGE_SIZE; ++k) p[k] = 0;
+                    s_sections[i].phys[j] = phys;
+                }
+                KDBG_TRACE("SYSCALL: NtCreateSection(sz=%llu) -> handle %llu", (u64)sz, (u64)(i+1));
+                return (u64)(i + 1);
+            }
+        }
+        return 0;
+    }
+
+    case NT_MAP_VIEW: {
+        if (!a1 || a1 > 8) return 0;
+        KSection& sec = s_sections[a1 - 1];
+        if (!sec.in_use) return 0;
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        KProcess* proc = t->Process;
+        constexpr u64 HEAP_MAX = 0x580000000ULL;
+        u64 va = proc->UserHeapCursor;
+        if (va + sec.page_count * PAGE_SIZE > HEAP_MAX) return 0;
+        proc->UserHeapCursor += sec.page_count * PAGE_SIZE;
+        u64 flags = VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER;
+        for (usize i = 0; i < sec.page_count; ++i) {
+            if (!VMM::MapPageInto(proc->Cr3, va + i * PAGE_SIZE, sec.phys[i], flags)) return 0;
+        }
+        KDBG_TRACE("SYSCALL: NtMapViewOfSection(h=%llu) -> 0x%llx", a1, va);
+        return va;
+    }
+
+    case NT_UNMAP_VIEW: {
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return (u64)STATUS_INVALID_PARAMETER;
+        for (usize i = 0; i < 8; ++i) {
+            KSection& sec = s_sections[i];
+            if (!sec.in_use) continue;
+            u64 phys = VMM::TranslateInPml4(t->Process->Cr3, a1);
+            if (phys && phys == sec.phys[0]) {
+                for (usize j = 0; j < sec.page_count; ++j)
+                    VMM::UnmapPageFrom(t->Process->Cr3, a1 + j * PAGE_SIZE);
+                return (u64)STATUS_SUCCESS;
+            }
+        }
+        return (u64)STATUS_NOT_FOUND;
+    }
+
+    case NT_SET_EX_HANDLER: {
+        KThread* t = Sched::CurrentThread();
+        if (!t) return (u64)STATUS_NOT_FOUND;
+        t->ExceptionHandler = a1;
+        KDBG_TRACE("SYSCALL: NtSetExceptionHandler(va=0x%llx)", a1);
+        return (u64)STATUS_SUCCESS;
+    }
+
+    case NT_RAISE_EXCEPTION: {
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->ExceptionHandler) {
+            KDBG_ERROR("SYSCALL: NtRaiseException: no handler registered");
+            return (u64)STATUS_NOT_FOUND;
+        }
+        g_pending_exception_va = t->ExceptionHandler;
+        KDBG_TRACE("SYSCALL: NtRaiseException(code=0x%llx) -> handler 0x%llx",
+                   a1, t->ExceptionHandler);
+        return a1;  // becomes RAX in the handler
+    }
+
     default:
         KDBG_WARN("SYSCALL: unknown number %llu (a1=0x%llx)", number, a1);
         return (u64)STATUS_INVALID_SYSTEM_SERVICE;
     }
 }
+
+
 
 namespace SYSCALL {
 

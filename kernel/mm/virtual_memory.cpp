@@ -150,6 +150,7 @@ bool HandlePageFault(u64 cr2, u32 error_code) {
     return false;
 }
 
+
 } // namespace VMM
 
 // ============================================================
@@ -232,6 +233,22 @@ u64 TranslateInPml4(u64 pml4_phys, u64 virt) {
     u64 pte = pt[pt_idx(virt)];
     if (!(pte & PTE_PRESENT)) return 0;
     return (pte & PTE_ADDR_MASK) | (virt & 0xFFF);
+}
+
+// M15: clear a single PTE in the given PML4 and flush the TLB entry.
+// Does NOT free the backing physical page -- caller's responsibility.
+void UnmapPageFrom(u64 pml4_phys, u64 virt) {
+    constexpr u64 AMASK = 0x000FFFFFFFFFF000ULL;
+    auto ix = [](u64 v, u32 sh) -> u64 { return (v >> sh) & 0x1FF; };
+    auto* l4 = reinterpret_cast<u64*>(pml4_phys);
+    u64 e1 = l4[ix(virt,39)];  if (!(e1&1)||(e1&(1<<7))) return;
+    auto* l3 = reinterpret_cast<u64*>(e1&AMASK);
+    u64 e2 = l3[ix(virt,30)];  if (!(e2&1)||(e2&(1<<7))) return;
+    auto* l2 = reinterpret_cast<u64*>(e2&AMASK);
+    u64 e3 = l2[ix(virt,21)];  if (!(e3&1)||(e3&(1<<7))) return;
+    auto* l1 = reinterpret_cast<u64*>(e3&AMASK);
+    l1[ix(virt,12)] = 0;
+    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
 } // namespace VMM

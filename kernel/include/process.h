@@ -1,5 +1,5 @@
 #pragma once
-// process.h - MicroNT M5: Process and Thread management
+// process.h - MicroNT M5-M15: Process and Thread management
 
 #include "ntdef.h"
 #include "ntstatus.h"
@@ -13,6 +13,20 @@ enum class ThreadState : u32 {
     BLOCKED    = 2,
     TERMINATED = 3,
 };
+
+// ============================================================
+// Thread priority levels  (M15)
+// ============================================================
+constexpr u32 THREAD_PRIORITY_LOW    = 0;
+constexpr u32 THREAD_PRIORITY_NORMAL = 1;
+constexpr u32 THREAD_PRIORITY_HIGH   = 2;
+constexpr u32 THREAD_PRIORITY_COUNT  = 3;
+
+// ============================================================
+// Free VA region — per-process free list entry  (M15)
+// ============================================================
+struct FreeRegion { u64 va; u32 pages; };
+constexpr usize FREE_LIST_SLOTS = 16;
 
 // ============================================================
 // KThread - Kernel Thread Control Block
@@ -29,6 +43,9 @@ struct KThread {
     ThreadState State;
     u32         QuantumLeft;      // remaining ticks before preemption
     u32         Flags;
+
+    // M15: scheduling priority (THREAD_PRIORITY_*)
+    u32         Priority;
 
     KProcess*   Process;          // owning process
 
@@ -53,6 +70,9 @@ struct KThread {
 
     // User-mode thread argument (passed as RDI via extended IRETQ frame)
     u64         UserArg;
+
+    // M15: exception handler VA (0 = none registered)
+    u64         ExceptionHandler;
 };
 
 // ============================================================
@@ -62,9 +82,12 @@ struct KProcess {
     u32         Pid;
     u32         Flags;
     u64         Cr3;              // physical address of PML4
-    u64         UserHeapCursor;   // per-process bump allocator base (init = USER_HEAP_BASE)
+    u64         UserHeapCursor;   // per-process bump allocator (init = 0x500000000)
     char        Name[32];
     i32         ExitStatus;
+
+    // M15: per-process free list for NtFreeVirtualMemory
+    FreeRegion  UserFreeList[FREE_LIST_SLOTS];
 };
 
 // ============================================================
@@ -77,54 +100,39 @@ void     Init();
 KProcess* CreateProcess(const char* name, u64 cr3 = 0);
 void      DestroyProcess(KProcess* process);
 
-// Allocate and set up a kernel thread (runs entry_fn(arg) in ring 0).
-// Does NOT add to the scheduler ready queue - caller does Sched::AddThread().
 KThread* CreateKernelThread(KProcess* process, const char* name,
                              void (*entry_fn)(void*), void* arg,
                              usize kernel_stack_size = 16384);
 
-// Allocate and set up a user thread (transitions to ring 3 via IRETQ).
-// user_stack_va: top of user stack (already mapped by caller).
-// user_arg: value passed to the thread in RDI (via extended IRETQ frame).
 KThread* CreateUserThread(KProcess* process, const char* name,
                            u64 user_entry_va, u64 user_stack_va,
                            u64 user_arg = 0,
                            usize kernel_stack_size = 16384);
 
-// Mark current thread TERMINATED and yield. Does not return.
 [[noreturn]] void TerminateCurrentThread(i32 exit_code = 0);
 
 KProcess* SystemProcess();
-KThread*  MainThread();    // the "boot" thread representing kernel_main
+KThread*  MainThread();
 
 } // namespace PS
 
 // ============================================================
-// Sched - Round-robin scheduler
+// Sched - Priority scheduler  (M15: 3-level priority queues)
 // ============================================================
 namespace Sched {
 
-constexpr u32 QUANTUM_TICKS = 5;  // 5 ticks = 50 ms at 100 Hz
+constexpr u32 QUANTUM_TICKS = 5;
 
 void     Init();
-void     Start();             // enable preemption; boot thread becomes main thread
+void     Start();
 void     AddThread(KThread* t);
-void     RemoveThread(KThread* t);  // remove from ready queue (if present)
-void     Tick();              // called from IRQ0 handler (interrupts disabled)
-void     Schedule();          // cooperative yield (interrupts must be enabled)
+void     RemoveThread(KThread* t);
+void     Tick();
+void     Schedule();
 KThread* CurrentThread();
 bool     IsActive();
-
-// Block the current thread (remove from ready queue, mark BLOCKED).
-// Caller must call Schedule() after this to switch to another thread.
-// Must be called with interrupts DISABLED.
 void     BlockCurrentThread();
-
-// Unblock a thread (mark READY and add to ready queue).
-// Safe to call with interrupts enabled or disabled.
 void     UnblockThread(KThread* t);
-
-// Put current thread to sleep for 'ms' milliseconds (uses PIT ticks).
 void     Sleep(u32 ms);
 
 } // namespace Sched
@@ -133,7 +141,7 @@ void     Sleep(u32 ms);
 // Assembly trampolines (switch.asm)
 // ============================================================
 extern "C" {
-    void switch_context(KThread* prev, KThread* next);  // save/restore RSP + callee-saved
-    void kernel_thread_entry();   // entry trampoline for kernel threads
-    void user_thread_entry();     // IRETQ trampoline for user threads
+    void switch_context(KThread* prev, KThread* next);
+    void kernel_thread_entry();
+    void user_thread_entry();
 }

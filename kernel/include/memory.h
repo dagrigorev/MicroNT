@@ -64,6 +64,7 @@ bool MapPage(u64 virt, u64 phys, u64 flags = PTE_PRESENT | PTE_WRITABLE);
 
 // Unmap a single 4 KB page and flush TLB entry.
 void UnmapPage(u64 virt);
+void UnmapPageFrom(u64 pml4_phys, u64 virt);  // clear PTE in given PML4
 
 // Translate virtual -> physical (0 = not mapped or huge-page addressed).
 u64  V2P(u64 virt);
