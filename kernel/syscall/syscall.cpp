@@ -70,6 +70,24 @@ constexpr u64 PROC_TABLE_SIZE     = 8;
 constexpr u64 SEMA_HANDLE_BASE    = 0x100;
 constexpr u64 SEMA_MAX            = 8;
 constexpr u64 MUTANT_HANDLE_BASE  = 0x200;
+
+// M21: in-memory writable file table
+struct WFile { char name[32]; u8 data[512]; u32 size; bool used; };
+static WFile  g_wfiles[8];
+static constexpr u64 WFILE_HANDLE_BASE = 0x40;
+
+static u64 WFindOrCreate(const char* name) {
+    for (u32 i=0;i<8;++i) if (g_wfiles[i].used) {
+        bool ok=true; for(int j=0;j<31;++j){if(g_wfiles[i].name[j]!=name[j]){ok=false;break;}if(!name[j])break;}
+        if (ok) return i;
+    }
+    for (u32 i=0;i<8;++i) if (!g_wfiles[i].used) {
+        g_wfiles[i].used=true; g_wfiles[i].size=0;
+        for(int j=0;j<31&&name[j];++j) g_wfiles[i].name[j]=name[j];
+        return i;
+    }
+    return 0xFF;
+}
 constexpr u64 MUTANT_MAX          = 8;
 
 // Command queue (pre-populated by kernel_main for M9 test)
@@ -94,6 +112,7 @@ volatile u32 g_m17_ok        = 0;
 volatile u32 g_m18_ok        = 0;
 volatile u32 g_m19_ok        = 0;
 volatile u32 g_m20_ok        = 0;
+volatile u32 g_m21_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
@@ -223,7 +242,22 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
     }
 
     case NT_WRITE_FILE: {
-        // a1=handle(unused for now), a2=user_buf_va, a3=length
+        // a1=handle, a2=user_buf_va, a3=length
+        // M21: if handle is a writable file handle, write to WFile table
+        if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_BASE+8) {
+            WFile& wf = g_wfiles[a1 - WFILE_HANDLE_BASE];
+            if (!wf.used) return 0;
+            KThread* t2 = Sched::CurrentThread();
+            if (!t2 || !t2->Process) return 0;
+            u64 pml4w = t2->Process->Cr3;
+            usize wlen = (usize)(a3 > 512 ? 512 : a3);
+            usize written = 0;
+            while (written < wlen && wf.size < 512) {
+                wf.data[wf.size++] = ReadUserByte(pml4w, a2 + written);
+                ++written;
+            }
+            return (u64)written;
+        }
         u64 user_va = a2;
         usize len   = (usize)(a3 > 512 ? 512 : a3);
         u8 kbuf[512+1] = {};
@@ -259,6 +293,9 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             // M20: echo command output starts with "M20"
             if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='0')
                 g_m20_ok = 1;
+            // M21: cat output echoes back written file with "M21" prefix
+            if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='1')
+                g_m21_ok = 1;
             // Mirror [USER] output to VGA console
             VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }
@@ -525,21 +562,35 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         kpath[plen] = '\0';
         KDBG_TRACE("SYSCALL: NtCreateFile('%s')", kpath);
         i32 h = VFS::Open(kpath);
-        return h >= 0 ? (u64)(h + 1) : 0;   // encode: 0=fail, N+1=handle
+        if (h >= 0) return (u64)(h + 1);   // VFS handle: 1..3F
+        // M21: not in VFS -> find or create in writable table
+        u64 wi = WFindOrCreate(kpath);
+        return wi < 8 ? (WFILE_HANDLE_BASE + wi) : 0;
     }
 
     case NT_READ_FILE: {
-        // a1=handle(1-based), a2=user_buf_va, a3=offset, a4=len
-        i32 h = (i32)((i64)a1 - 1);
-        u64 offset = a3;
-        usize len  = (usize)(a4 > 4096 ? 4096 : a4);
-        u8 kbuf[4096] = {};
-        i64 got = VFS::Read(h, offset, kbuf, len);
-        if (got <= 0) return 0;
-        // Copy to user buffer
+        // a1=handle, a2=user_buf_va, a3=offset, a4=len
+        usize len = (usize)(a4 > 512 ? 512 : a4);
         KThread* t = Sched::CurrentThread();
         if (!t || !t->Process) return 0;
         u64 pml4 = t->Process->Cr3;
+
+        if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_BASE+8) {
+            // M21: read from writable file table
+            WFile& wf = g_wfiles[a1 - WFILE_HANDLE_BASE];
+            if (!wf.used || a3 >= wf.size) return 0;
+            usize avail = wf.size - (usize)a3;
+            if (len > avail) len = avail;
+            for (usize i=0; i<len; ++i)
+                WriteUserByte(pml4, a2+i, wf.data[(usize)a3+i]);
+            return (u64)len;
+        }
+
+        i32 h = (i32)((i64)a1 - 1);
+        u64 offset = a3;
+        u8 kbuf[512] = {};
+        i64 got = VFS::Read(h, offset, kbuf, len);
+        if (got <= 0) return 0;
         for (i64 i=0; i<got; ++i)
             WriteUserByte(pml4, a2+i, kbuf[i]);
         return (u64)got;
@@ -554,7 +605,7 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
 
     case NT_QUERY_DIR: {
         // a1=user_buf_va, a2=buf_len
-        // Writes null-separated filenames + sizes: "name\0" repeated, then "\0"
+        // Writes null-separated filenames: "name\0" repeated, then "\0"
         usize buf_len = (usize)(a2 > 2048 ? 2048 : a2);
         KThread* t = Sched::CurrentThread();
         if (!t || !t->Process) return 0;
@@ -562,18 +613,22 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         u64 pos  = a1;
         u64 end  = a1 + buf_len - 1;
 
-        // Callback writes each filename
         struct CbArgs { u64 pml4; u64 pos; u64 end; };
         static CbArgs cb_args;
         cb_args = { pml4, pos, end };
         VFS::ForEach([](const char* name, u64 /*size*/) {
-            for (usize i = 0; name[i] && cb_args.pos < cb_args.end; ++i) {
+            for (usize i = 0; name[i] && cb_args.pos < cb_args.end; ++i)
                 WriteUserByte(cb_args.pml4, cb_args.pos++, (u8)name[i]);
-            }
             if (cb_args.pos < cb_args.end)
-                WriteUserByte(cb_args.pml4, cb_args.pos++, 0);  // separator
+                WriteUserByte(cb_args.pml4, cb_args.pos++, 0);
         });
-        // Final null terminator
+        // M21: also list writable files
+        for (u32 i = 0; i < 8 && cb_args.pos < cb_args.end - 2; ++i) {
+            if (!g_wfiles[i].used) continue;
+            for (usize j = 0; g_wfiles[i].name[j] && cb_args.pos < cb_args.end; ++j)
+                WriteUserByte(cb_args.pml4, cb_args.pos++, (u8)g_wfiles[i].name[j]);
+            WriteUserByte(cb_args.pml4, cb_args.pos++, 0);
+        }
         if (cb_args.pos < end) WriteUserByte(pml4, cb_args.pos++, 0);
         return cb_args.pos - a1;
     }
