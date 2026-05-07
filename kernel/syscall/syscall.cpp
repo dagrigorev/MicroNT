@@ -64,6 +64,7 @@ constexpr u64 NT_RELEASE_MUTANT   = 28;
 constexpr u64 NT_CREATE_PROCESS   = 29;
 constexpr u64 NT_WAIT_MULTI       = 30;
 constexpr u64 NT_OPEN_EVENT       = 31;
+constexpr u64 NT_VGA_CLEAR        = 32;
 constexpr u64 PROC_HANDLE_BASE    = 0x300;
 constexpr u64 PROC_TABLE_SIZE     = 8;
 constexpr u64 SEMA_HANDLE_BASE    = 0x100;
@@ -92,6 +93,7 @@ volatile u32 g_m16_ok        = 0;
 volatile u32 g_m17_ok        = 0;
 volatile u32 g_m18_ok        = 0;
 volatile u32 g_m19_ok        = 0;
+volatile u32 g_m20_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
@@ -254,6 +256,9 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             // M19: ps output starts with "System"
             if (got >= 6 && kbuf[0]=='S' && kbuf[1]=='y' && kbuf[2]=='s' && kbuf[3]=='t')
                 g_m19_ok = 1;
+            // M20: echo command output starts with "M20"
+            if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='0')
+                g_m20_ok = 1;
             // Mirror [USER] output to VGA console
             VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }
@@ -803,6 +808,11 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             if(deadline!=(u64)-1&&(u64)HAL::PitTicks()>=deadline)return (u64)STATUS_TIMEOUT;
             Sched::Sleep(10);
         }
+    }
+
+    case NT_VGA_CLEAR: {
+        VGA::Init();   // clear VGA screen and redraw header bar
+        return (u64)STATUS_SUCCESS;
     }
 
     case NT_OPEN_EVENT: {
