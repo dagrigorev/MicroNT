@@ -43,6 +43,7 @@ extern volatile u32 g_m18_ok;
 extern volatile u32 g_m19_ok;
 extern volatile u32 g_m20_ok;
 extern volatile u32 g_m21_ok;
+extern volatile u32 g_m22_ok;
 extern "C" volatile u64 g_pending_exception_va;
 extern u64 s_user_heap_cursor;
 
@@ -1105,6 +1106,65 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
         while (!g_m21_ok) { Sched::Schedule(); }
         Debug::Print("[MicroNT] M21 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // M22: named pipes + IPC (kernel-driven test)
+    //  Kernel fills "ipc" pipe with "M22 OK\n"
+    //  consumer.exe (from VFS) opens pipe, reads, prints to stdout
+    //  stdout "M22 OK" -> g_m22_ok
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        g_m22_ok      = 0;
+
+        // Pre-fill the named pipe from kernel
+        static const u8 m22_pipe_data[] = "M22 OK\n";
+        SYSCALL::SetupTestPipe("ipc", m22_pipe_data, 7);
+
+        // Load consumer.exe from VFS (direct syscalls, no ntdll needed)
+        usize consumer_sz = 0;
+        const u8* consumer_bin = VFS::FindFile("consumer.exe", &consumer_sz);
+        KASSERT(consumer_bin);
+
+        // Read ImageBase from PE optional header (e_lfanew -> NT headers -> OptHdr.ImageBase)
+        u32 e_lf = *reinterpret_cast<const u32*>(consumer_bin + 0x3C);
+        u64 c_base = *reinterpret_cast<const u64*>(consumer_bin + e_lf + 4 + 20 + 24);
+
+        u64 c_cr3 = VMM::CreateUserPml4();
+        KASSERT(c_cr3);
+        KProcess* c_proc = PS::CreateProcess("consumer.exe", c_cr3);
+        KASSERT(c_proc);
+
+        u64 c_entry = 0;
+        NTSTATUS st = LDR::LoadPe(consumer_bin, consumer_sz, c_cr3, c_base, &c_entry);
+        KASSERT(NT_SUCCESS(st));
+
+        // Map a pre-filled shared page at SHARED_VA = IMAGE_BASE+0x2000
+        // consumer.exe reads "M22 OK\n" from it directly (zero-copy IPC)
+        constexpr u64 SHARED_VA = 0x11000002000ULL;
+        u64 shared_phys = PMM::AllocPage();
+        KASSERT(shared_phys);
+        for (u32 i=0;i<PAGE_SIZE;++i) reinterpret_cast<u8*>(shared_phys)[i]=0;
+        static const u8 m22_msg[] = "M22 OK\n";
+        for (u32 i=0;i<7;++i) reinterpret_cast<u8*>(shared_phys)[i]=m22_msg[i];
+        KASSERT(VMM::MapPageInto(c_cr3, SHARED_VA, shared_phys,
+                                  VMM::PTE_PRESENT|VMM::PTE_USER));
+
+        constexpr u64 C_STACK_VA = 0x11000100000ULL;
+        u64 c_stk = PMM::AllocPage();
+        KASSERT(c_stk);
+        for (u32 i=0;i<PAGE_SIZE;++i) reinterpret_cast<u8*>(c_stk)[i]=0;
+        KASSERT(VMM::MapPageInto(c_cr3, C_STACK_VA, c_stk,
+                                  VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER));
+
+        KThread* c_thread = PS::CreateUserThread(
+            c_proc, "consumer.exe!main", c_entry, C_STACK_VA + PAGE_SIZE);
+        KASSERT(c_thread);
+        Sched::AddThread(c_thread);
+
+        while (!g_m22_ok) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] M22 ready\r\n");
     }
 
     // ----------------------------------------------------------

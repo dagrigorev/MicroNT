@@ -71,6 +71,12 @@ constexpr u64 SEMA_HANDLE_BASE    = 0x100;
 constexpr u64 SEMA_MAX            = 8;
 constexpr u64 MUTANT_HANDLE_BASE  = 0x200;
 
+// M22: named pipe table
+struct KPipe { char name[32]; u8 data[512]; u32 size; bool used; };
+static KPipe g_pipes[4];
+static constexpr u64 PIPE_HANDLE_BASE = 0x80;
+constexpr u64 NT_CREATE_NAMED_PIPE = 33;
+
 // M21: in-memory writable file table
 struct WFile { char name[32]; u8 data[512]; u32 size; bool used; };
 static WFile  g_wfiles[8];
@@ -113,6 +119,7 @@ volatile u32 g_m18_ok        = 0;
 volatile u32 g_m19_ok        = 0;
 volatile u32 g_m20_ok        = 0;
 volatile u32 g_m21_ok        = 0;
+volatile u32 g_m22_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
@@ -244,6 +251,20 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
     case NT_WRITE_FILE: {
         // a1=handle, a2=user_buf_va, a3=length
         // M21: if handle is a writable file handle, write to WFile table
+        if (a1 >= PIPE_HANDLE_BASE && a1 < PIPE_HANDLE_BASE+4) {
+            KPipe& kp = g_pipes[a1 - PIPE_HANDLE_BASE];
+            if (!kp.used) return 0;
+            KThread* tp = Sched::CurrentThread();
+            if (!tp || !tp->Process) return 0;
+            u64 pml4p = tp->Process->Cr3;
+            usize wlen = (usize)(a3 > 512 ? 512 : a3);
+            usize written = 0;
+            while (written < wlen && kp.size < 512) {
+                kp.data[kp.size++] = ReadUserByte(pml4p, a2 + written);
+                ++written;
+            }
+            return (u64)written;
+        }
         if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_BASE+8) {
             WFile& wf = g_wfiles[a1 - WFILE_HANDLE_BASE];
             if (!wf.used) return 0;
@@ -296,6 +317,9 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             // M21: cat output echoes back written file with "M21" prefix
             if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='1')
                 g_m21_ok = 1;
+            // M22: consumer.exe prints pipe content starting with "M22"
+            if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='2')
+                g_m22_ok = 1;
             // Mirror [USER] output to VGA console
             VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }
@@ -575,6 +599,33 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         if (!t || !t->Process) return 0;
         u64 pml4 = t->Process->Cr3;
 
+        if (a1 >= PIPE_HANDLE_BASE && a1 < PIPE_HANDLE_BASE+4) {
+            KPipe& kp = g_pipes[a1 - PIPE_HANDLE_BASE];
+            if (!kp.used) return 0;
+            KThread* tp = Sched::CurrentThread();
+            if (!tp || !tp->Process) return 0;
+            u64 pml4p = tp->Process->Cr3;
+            usize wlen = (usize)(a3 > 512 ? 512 : a3);
+            usize written = 0;
+            while (written < wlen && kp.size < 512) {
+                kp.data[kp.size++] = ReadUserByte(pml4p, a2 + written);
+                ++written;
+            }
+            return (u64)written;
+        }
+        if (a1 >= PIPE_HANDLE_BASE && a1 < PIPE_HANDLE_BASE+4) {
+            // M22: read from named pipe
+            KPipe& kp = g_pipes[a1 - PIPE_HANDLE_BASE];
+            if (!kp.used || a3 >= kp.size) return 0;
+            usize avail = kp.size - (usize)a3;
+            if (len > avail) len = avail;
+            KThread* tp = Sched::CurrentThread();
+            if (!tp || !tp->Process) return 0;
+            u64 pml4p = tp->Process->Cr3;
+            for (usize i=0; i<len; ++i)
+                WriteUserByte(pml4p, a2+i, kp.data[(usize)a3+i]);
+            return (u64)len;
+        }
         if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_BASE+8) {
             // M21: read from writable file table
             WFile& wf = g_wfiles[a1 - WFILE_HANDLE_BASE];
@@ -865,6 +916,30 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         }
     }
 
+    case NT_CREATE_NAMED_PIPE: {
+        // a1=name_va, a2=name_len -> handle (PIPE_HANDLE_BASE+idx) or 0
+        usize plen = (usize)(a2 > 31 ? 31 : a2);
+        char kname[32] = {};
+        ReadUserBytes(a1, reinterpret_cast<u8*>(kname), plen);
+        kname[plen] = '\0';
+        // find existing
+        for (u32 i=0;i<4;++i)
+            if (g_pipes[i].used) {
+                bool ok=true;
+                for(int j=0;j<31;++j){if(g_pipes[i].name[j]!=kname[j]){ok=false;break;}if(!kname[j])break;}
+                if (ok) { KDBG_INFO("SYSCALL: NtCreateNamedPipe find existing [%u] '%s' -> 0x%llx", i, kname, PIPE_HANDLE_BASE+i); return PIPE_HANDLE_BASE + i; }
+            }
+        // create new
+        for (u32 i=0;i<4;++i)
+            if (!g_pipes[i].used) {
+                g_pipes[i].used=true; g_pipes[i].size=0;
+                for(int j=0;j<31&&kname[j];++j) g_pipes[i].name[j]=kname[j];
+                KDBG_TRACE("SYSCALL: NtCreateNamedPipe('%s') -> 0x%llx", kname, PIPE_HANDLE_BASE+i);
+                return PIPE_HANDLE_BASE + i;
+            }
+        return 0; // table full
+    }
+
     case NT_VGA_CLEAR: {
         VGA::Init();   // clear VGA screen and redraw header bar
         return (u64)STATUS_SUCCESS;
@@ -933,6 +1008,16 @@ void Init() {
 } // namespace SYSCALL
 
 namespace SYSCALL {
+
+void SetupTestPipe(const char* name, const u8* data, u32 len) {
+    for (u32 i=0;i<4;++i)
+        if (!g_pipes[i].used) {
+            g_pipes[i].used=true; g_pipes[i].size=len>512?512:len;
+            for(int j=0;j<31&&name[j];++j) g_pipes[i].name[j]=name[j];
+            for(u32 j=0;j<g_pipes[i].size;++j) g_pipes[i].data[j]=data[j];
+            return;
+        }
+}
 
 void SetCommands(const char** cmds, u32 count) {
     s_cmd_idx = 0;

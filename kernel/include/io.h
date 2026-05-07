@@ -27,6 +27,7 @@ namespace Console {
 namespace SYSCALL {
 void Init();
 void SetCommands(const char** cmds, u32 count);
+void SetupTestPipe(const char* name, const u8* data, u32 len);
 } // namespace SYSCALL
 
 // ============================================================
