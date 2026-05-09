@@ -306,8 +306,9 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 g_m16_ok = 1;
             if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='7')
                 g_m17_ok = 1;
-            if (got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='8')
-                g_m18_ok = 1;
+            if ((got >= 6 && kbuf[0]=='M' && kbuf[1]=='1' && kbuf[2]=='8') ||
+                (got >= 7 && kbuf[0]=='G' && kbuf[1]=='o' && kbuf[2]=='o' && kbuf[3]=='d'))
+                g_m18_ok = 1;  // 'M18 OK' (old) or 'Goodbye' (interactive exit)
             // M19: ps output starts with "System"
             if (got >= 6 && kbuf[0]=='S' && kbuf[1]=='y' && kbuf[2]=='s' && kbuf[3]=='t')
                 g_m19_ok = 1;
