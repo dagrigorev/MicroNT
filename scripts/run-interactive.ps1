@@ -80,7 +80,7 @@ if ($SkipBuild) {
     }
 } else {
     Step 'Build kernel + bootloader'
-    & (Join-Path $PSScriptRoot 'build.ps1')
+    & (Join-Path $PSScriptRoot 'build.ps1') -Clean   # always clean to avoid stale .o files
     if ($LASTEXITCODE -ne 0) { Fail 'build.ps1 failed.' }
     Pass 'Kernel + bootloader built'
 }

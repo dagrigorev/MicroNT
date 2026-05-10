@@ -56,6 +56,12 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
     Debug::Print("\r\n");
     Debug::Print("[MicroNT] Boot started\r\n");
+    // Initialize GOP framebuffer renderer before first VGA::Init()
+    if (boot_info && boot_info->fb_base) {
+        VGA::SetFramebuffer(boot_info->fb_base,
+                            boot_info->fb_width, boot_info->fb_height,
+                            boot_info->fb_stride, boot_info->fb_format);
+    }
     VGA::Init();
     KB::Init();
     HAL::IrqRegister(1, KB::HandleIrq);  // PS/2 keyboard = IRQ1
@@ -1184,19 +1190,8 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
     // ================================================================
     // INTERACTIVE MODE
-    // All automated tests complete.  Clear VGA and start user shell.
     // ================================================================
     {
-        VGA::Init();   // clear VGA screen, redraw header bar
-
-        // Write welcome directly via VGA (Debug::Print is serial-only)
-        VGA::Print("\r\n", 0x07);
-        VGA::Print("  MicroNT Microkernel  -  Build M22\r\n", 0x0F);
-        VGA::Print("  ===================================\r\n", 0x08);
-        VGA::Print("  All systems online.  Ready for input.\r\n", 0x07);
-        VGA::Print("  Commands: ver dir mem ps exec cat echo write help exit\r\n", 0x07);
-        VGA::Print("\r\n", 0x07);
-
         // Pass no pre-programmed commands -> NtReadLine uses PS/2 keyboard
         SYSCALL::SetCommands(nullptr, 0);
 
@@ -1226,11 +1221,15 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         KThread* uthread = PS::CreateUserThread(
             proc, "micront.exe!main", entry_va, INTERACTIVE_STACK_VA + PAGE_SIZE);
         KASSERT(uthread);
+
+        // Paint screen last -- after all setup, before AddThread.
+        // Uses direct buffer writes (same path as header) so it's guaranteed
+        // to appear regardless of s_row/s_col state.  Sets s_row=7.
+        VGA::Init();
+        VGA::WriteWelcome();
+
         Sched::AddThread(uthread);
 
-        // Kernel idles; the interactive shell owns the CPU from here.
-        // If the user types 'exit', NtTerminateThread ends the shell thread
-        // and this loop spins quietly until the system is powered off.
         while (true) { Sched::Schedule(); }
     }
 }

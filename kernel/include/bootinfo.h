@@ -35,6 +35,12 @@ struct MicroNTBootInfo {
     unsigned long long  initrd_size;
     unsigned int        memory_entry_count;
     unsigned int        boot_file_count;
+    // GOP framebuffer (filled by bootloader, 0 if unavailable)
+    unsigned long long  fb_base;          // physical base of linear framebuffer
+    unsigned int        fb_width;         // horizontal resolution in pixels
+    unsigned int        fb_height;        // vertical resolution in pixels
+    unsigned int        fb_stride;        // pixels per scan line (may be > width)
+    unsigned int        fb_format;        // 0=RGBX, 1=BGRX (EFI pixel format)
     BootFile            boot_files[BOOT_FILES_MAX];
     BootMemoryEntry     memory_map[BOOT_MEMORY_MAX];
 };

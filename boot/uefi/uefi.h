@@ -323,3 +323,43 @@ static const EFI_GUID ACPI_20_TABLE_GUID = {
     0x8868E871, 0xE4F1, 0x11D3,
     {0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81}
 };
+
+// ---------------------------------------------------------------------------
+// Graphics Output Protocol (GOP) -- needed for framebuffer query
+// ---------------------------------------------------------------------------
+#define EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID \
+    { 0x9042A9DE, 0x23DC, 0x4A38, \
+      { 0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A } }
+
+typedef enum {
+    PixelRedGreenBlueReserved8BitPerColor = 0,
+    PixelBlueGreenRedReserved8BitPerColor = 1,
+    PixelBitMask                          = 2,
+    PixelBltOnly                          = 3,
+    PixelFormatMax
+} EFI_GRAPHICS_PIXEL_FORMAT;
+
+typedef struct {
+    UINT32                    Version;
+    UINT32                    HorizontalResolution;
+    UINT32                    VerticalResolution;
+    EFI_GRAPHICS_PIXEL_FORMAT PixelFormat;
+    UINT32                    PixelInformation[4];
+    UINT32                    PixelsPerScanLine;
+} EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
+
+typedef struct {
+    UINT32                               MaxMode;
+    UINT32                               Mode;
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* Info;
+    UINTN                                SizeOfInfo;
+    EFI_PHYSICAL_ADDRESS                 FrameBufferBase;
+    UINTN                                FrameBufferSize;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
+
+typedef struct {
+    void* QueryMode;
+    void* SetMode;
+    void* Blt;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE* Mode;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL;

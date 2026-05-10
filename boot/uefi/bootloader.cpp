@@ -433,6 +433,29 @@ extern "C" EFI_STATUS EfiMain(EFI_HANDLE ImageHandle,
     bi->boot_file_count  = 0;
     LOG_VAL("BootInfo at: ", (UINT64)(UINTN)bi);
 
+    // ---- Step 6a: Query GOP framebuffer ----
+    // Must happen before ExitBootServices while UEFI is still active.
+    TRACE("Step 6a: Query GOP framebuffer");
+    {
+        EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+        EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = nullptr;
+        EFI_STATUS gs = gBS->LocateProtocol(&gopGuid, nullptr, (void**)&gop);
+        if (!EFI_IS_ERROR(gs) && gop && gop->Mode) {
+            bi->fb_base   = (unsigned long long)gop->Mode->FrameBufferBase;
+            bi->fb_width  = gop->Mode->Info->HorizontalResolution;
+            bi->fb_height = gop->Mode->Info->VerticalResolution;
+            bi->fb_stride = gop->Mode->Info->PixelsPerScanLine;
+            bi->fb_format = (unsigned int)gop->Mode->Info->PixelFormat;
+            LOG_VAL("FB base:   ", bi->fb_base);
+            LOG_VAL("FB width:  ", bi->fb_width);
+            LOG_VAL("FB height: ", bi->fb_height);
+            LOG_VAL("FB stride: ", bi->fb_stride);
+        } else {
+            TRACE("GOP not available");
+            bi->fb_base = 0;
+        }
+    }
+
     // ---- Step 6b: Load boot files from /boot/*.exe ----
     // Scan root directory for files matching /boot/<name>.exe and load them.
     // This runs before ExitBootServices so UEFI filesystem is still available.
