@@ -44,6 +44,9 @@ Written from scratch in C++20 and NASM. No Windows source, no ReactOS, no EDK2.
 .\scripts\debug-serial.ps1    # tail COM1 output
 ```
 
+on vm should see:
+![Hello screen](./vm.png)
+
 ## Architecture
 
 ```
