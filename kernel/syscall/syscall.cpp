@@ -232,19 +232,40 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             return (u64)len;
         }
 
-        // Keyboard fallback: collect chars until newline or buffer full
-        usize maxlen = (usize)(a2 > 1 ? a2-1 : 1);
+        // // Keyboard fallback: collect chars until newline or buffer full
+        // usize maxlen = (usize)(a2 > 1 ? a2-1 : 1);
+        // Keyboard fallback: collect chars until Enter or buffer full.
+        // The returned command must not include the newline; queued commands
+        // above also return plain strings like "ver"/"exit".
+        usize maxlen = (usize)(a2 > 1 ? a2 - 1 : 0);
         usize n = 0;
         while (n < maxlen) {
             char ch = 0;
             while (!KB::TryRead(&ch)) { Sched::Sleep(10); }
-            if (ch == '\b') { if (n>0) --n; continue; }
-            WriteUserByte(pml4, a1+n, (u8)ch);
-            if (ch == '\n') { ++n; break; }
+            // if (ch == '\b') { if (n>0) --n; continue; }
+            // WriteUserByte(pml4, a1+n, (u8)ch);
+            // if (ch == '\n') { ++n; break; }
+            //++n;
+            if (ch == '\n' || ch == '\r') {
+                VGA::PutChar('\n', 0x07);
+                break;
+            }
+
+            if (ch == '\b') {
+                if (n > 0) {
+                    --n;
+                    VGA::PutChar('\b', 0x0F);
+                }
+                continue;
+            }
+
+            WriteUserByte(pml4, a1 + n, (u8)ch);
             ++n;
+            VGA::PutChar(ch, 0x0F);
         }
-        WriteUserByte(pml4, a1+n, 0);
-        VGA::PutChar('\n', 0x07);   // move to next line on screen
+        //WriteUserByte(pml4, a1+n, 0);
+        //VGA::PutChar('\n', 0x07);   // move to next line on screen
+        WriteUserByte(pml4, a1 + n, 0);
         return (u64)n;
     }
 

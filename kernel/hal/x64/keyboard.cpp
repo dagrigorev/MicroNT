@@ -19,8 +19,11 @@ static const char s_scan[128] = {
       0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0, // 0x7
 };
 
-static u8  s_ring[128];
-static u32 s_head = 0, s_tail = 0;
+// static u8  s_ring[128];
+// static u32 s_head = 0, s_tail = 0;
+static u8           s_ring[128];
+static volatile u32 s_head = 0;
+static volatile u32 s_tail = 0;
 
 static u8 Inb(u16 port) {
     u8 v; __asm__ volatile("inb %1,%0":"=a"(v):"Nd"(port)); return v;
@@ -36,8 +39,10 @@ void HandleIrq(u8 /*irq*/) {
     if (next == s_head) return;     // buffer full
     s_ring[s_tail] = (u8)c;
     s_tail = next;
-    // Echo to VGA so the user sees what they type
-    VGA::PutChar(c, 0x0F);
+    // // Echo to VGA so the user sees what they type
+    // VGA::PutChar(c, 0x0F);
+    // Do not echo in IRQ context. Line editing and echoing are handled
+    // by NtReadLine so input semantics stay console-owned.
 }
 
 bool TryRead(char* out) {

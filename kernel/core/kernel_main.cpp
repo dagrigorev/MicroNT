@@ -63,8 +63,8 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
                             boot_info->fb_stride, boot_info->fb_format);
     }
     VGA::Init();
-    KB::Init();
-    HAL::IrqRegister(1, KB::HandleIrq);  // PS/2 keyboard = IRQ1
+    //KB::Init();
+    //HAL::IrqRegister(1, KB::HandleIrq);  // PS/2 keyboard = IRQ1
     Debug::Print("[MicroNT] CPU: x86_64 long mode (UEFI)\r\n");
 
     // Validate boot info
@@ -91,6 +91,13 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     HAL::PicInit();
 
     HAL::IrqInit();
+
+    // IRQ table must be initialized before registering IRQ handlers.
+    // PicInit() masks all IRQs except cascade; unmask IRQ1 explicitly
+    // after the keyboard handler is registered.
+    KB::Init();
+    HAL::IrqRegister(1, KB::HandleIrq);  // PS/2 keyboard = IRQ1
+    HAL::PicSetMask(1, false);
 
     HAL::IdtInit();
     Debug::Print("[MicroNT] IDT initialized\r\n");
