@@ -24,6 +24,7 @@ static          u32 s_ms_per_tick = 0;  // 1000 / hz (rounded)
 // IRQ0 handler - called from IrqDispatch
 static void TimerHandler(u8 /*irq*/) {
     s_ticks = s_ticks + 1u;  // avoid deprecated volatile increment in C++20
+    if ((s_ticks % 50) == 0) VGA::BlinkCursor();  // blink ~every 500 ms
     Sched::Tick();            // preempt current thread if quantum expired
 }
 

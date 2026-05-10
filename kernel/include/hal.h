@@ -140,6 +140,8 @@ namespace VGA {
     void Print(const char* s, u8 attr = 0x07);
     void PutChar(char ch, u8 attr = 0x07);
     void PrintUser(const char* buf, usize len);
+    void UpdateCursor();   // show cursor at current position
+    void BlinkCursor();    // toggle cursor blink (call from PIT ~every 50 ticks)
 }
 
 // ============================================================

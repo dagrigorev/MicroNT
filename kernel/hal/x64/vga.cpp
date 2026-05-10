@@ -280,6 +280,7 @@ static u32 s_cols = 80;
 static u32 s_rows = 25;
 static u32 s_row  = 1;
 static u32 s_col  = 0;
+static bool s_cursor_visible = false;  // is cursor currently drawn?
 
 static constexpr u32 CHAR_W = 8;
 static constexpr u32 CHAR_H = 16;
@@ -302,6 +303,9 @@ static u32 ToPixel(u32 rgb) {
 }
 static u32 AttrFg(u8 attr) { return ToPixel(s_palette[attr & 0x0F]); }
 static u32 AttrBg(u8 attr) { return ToPixel(s_palette[(attr >> 4) & 0x07]); }
+
+static void EraseCursor();
+static void DrawCursorShape();
 
 // ---------------------------------------------------------------------------
 // Draw one character at text cell (cx, cy) with given foreground/background
@@ -353,25 +357,63 @@ static void Scroll() {
 }
 
 void PutChar(char ch, u8 attr) {
-    if (ch == '\r') { s_col = 0; return; }
+    EraseCursor();
+    if (ch == '\b') {
+        // Destructive backspace: erase previous character and move back
+        if (s_col > 0) { --s_col; SetCell(s_row, s_col, ' ', 0x07); }
+        DrawCursorShape(); return;
+    }
+    if (ch == '\r') { s_col = 0; DrawCursorShape(); return; }
     if (ch == '\n') {
         s_col = 0;
         if (++s_row >= s_rows) Scroll();
-        return;
+        DrawCursorShape(); return;
     }
     SetCell(s_row, s_col, ch, attr);
     if (++s_col >= s_cols) {
         s_col = 0;
         if (++s_row >= s_rows) Scroll();
     }
+    DrawCursorShape();
 }
 
 // Update hardware text cursor (no-op for GOP mode; kept for ABI compat)
-static void UpdateCursor() {}
+static void EraseCursor() {
+    if (!s_cursor_visible || !s_fb) return;
+    // Redraw the character underneath to remove the cursor bar
+    if (s_row < s_rows && s_col < s_cols) {
+        Cell& cell = s_cells[s_row][s_col];
+        DrawChar(s_col, s_row, cell.ch, AttrFg(cell.attr), AttrBg(cell.attr));
+    }
+    s_cursor_visible = false;
+}
+
+static void DrawCursorShape() {
+    if (!s_fb || s_row >= s_rows || s_col >= s_cols) return;
+    // Underline cursor: last 2 pixel rows of the character cell
+    u32 px = s_col * CHAR_W;
+    u32 py = s_row * CHAR_H + CHAR_H - 2;
+    u32 color = ToPixel(s_palette[7]);  // light gray
+    for (u32 r = 0; r < 2 && (py + r) < s_fb_h; ++r) {
+        u32* line = s_fb + (py + r) * s_fb_stride + px;
+        for (u32 c = 0; c < CHAR_W; ++c)
+            line[c] = color;
+    }
+    s_cursor_visible = true;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+// Show cursor at current position (call after any operation that moves the cursor)
+void UpdateCursor() { EraseCursor(); DrawCursorShape(); }
+
+// Toggle cursor blink -- call from PIT handler every ~50 ticks (500 ms)
+void BlinkCursor() {
+    if (s_cursor_visible) EraseCursor();
+    else DrawCursorShape();
+}
 
 // Called once from kernel_main with framebuffer from BootInfo
 void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt) {
@@ -436,6 +478,7 @@ void Print(const char* s, u8 attr) {
 
 // Print a [USER] line: always at column 0 of s_row
 void PrintUser(const char* buf, usize len) {
+    EraseCursor();
     // Write directly into cells at s_row, bypassing s_col entirely
     if (s_row < 1) s_row = 1;
     if (s_row >= s_rows) Scroll();
@@ -449,7 +492,7 @@ void PrintUser(const char* buf, usize len) {
     for (; col < s_cols; ++col) SetCell(s_row, col, ' ', 0x07);
     ++s_row;
     s_col = 0;
-    UpdateCursor();
+    DrawCursorShape();
 }
 
 } // namespace VGA
