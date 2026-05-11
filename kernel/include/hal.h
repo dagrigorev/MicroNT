@@ -131,11 +131,12 @@ void Print(u16 port, const char* str);
 } // namespace Serial
 
 // ============================================================
-// VGA - 80x25 text console  (M17)
+// VGA - GOP framebuffer console  (M24+)
 // ============================================================
 namespace VGA {
     void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt);
     void Init();
+    void ClearScreen();    // fast clear rows 1+, keeps header bar
     void WriteWelcome();
     void Print(const char* s, u8 attr = 0x07);
     void PutChar(char ch, u8 attr = 0x07);

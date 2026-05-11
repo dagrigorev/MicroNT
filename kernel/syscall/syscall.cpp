@@ -1067,7 +1067,7 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
     }
 
     case NT_VGA_CLEAR: {
-        VGA::Init();   // clear VGA screen and redraw header bar
+        VGA::ClearScreen();   // fast clear: blanks rows 1+, keeps header bar
         return (u64)STATUS_SUCCESS;
     }
 

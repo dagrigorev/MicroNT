@@ -441,7 +441,7 @@ void Init() {
         for (u32 c = 0; c < s_cols; ++c)
             s_cells[r][c] = { ' ', 0x07 };
     // Header bar (row 0): blue bg, bright white fg -- centered over actual width
-    const char hdr[] = "*** MicroNT Kernel M24 ***";
+    const char hdr[] = "*** MicroNT Kernel M28 ***";
     constexpr u32 hlen = sizeof(hdr) - 1;
     u32 hstart = (s_cols > hlen) ? (s_cols - hlen) / 2 : 0;
     for (u32 c = 0; c < s_cols; ++c)
@@ -453,13 +453,28 @@ void Init() {
     s_row = 1; s_col = 0;
 }
 
+// ClearScreen: fast clear for the 'clear' shell command.
+// Keeps the header bar (row 0), blanks rows 1+ and resets cursor.
+void ClearScreen() {
+    if (!s_fb) return;
+    EraseCursor();
+    for (u32 r = 1; r < s_rows; ++r)
+        for (u32 c = 0; c < s_cols; ++c)
+            s_cells[r][c] = { ' ', 0x07 };
+    // Repaint rows 1+ to the framebuffer
+    for (u32 r = 1; r < s_rows; ++r)
+        for (u32 c = 0; c < s_cols; ++c)
+            DrawChar(c, r, ' ', 7, 0);
+    s_row = 1; s_col = 0;
+    DrawCursorShape();
+}
+
 void WriteWelcome() {
     if (!s_fb) return;
-    // Write welcome info directly into text cells (rows 2-5)
-    const char l1[] = "  MicroNT Microkernel  -  Build M24  ";
-    const char l2[] = "  ====================================";
+    const char l1[] = "  MicroNT Microkernel  -  Build M28";
+    const char l2[] = "  ===================================";
     const char l3[] = "  All systems online.  Ready for input.";
-    const char l4[] = "  Commands: ver dir mem ps cat echo write help exit";
+    const char l4[] = "  Commands: ver dir mem ps exec cat echo write clear pipe help exit";
     auto writeln = [&](u32 row, const char* s, u8 attr) {
         for (u32 c = 0; c < s_cols && s[c]; ++c)
             SetCell(row, c, (u8)s[c], attr);
@@ -477,6 +492,26 @@ void Print(const char* s, u8 attr) {
 }
 
 // Print a [USER] line: always at column 0 of s_row
+// Detect a display color for a line of output based on content.
+static u8 ContentColor(const char* buf, u32 len) {
+    if (len == 0) return 0x0F;
+    // File extensions (last 4 chars)
+    if (len >= 4) {
+        const char* e = buf + len - 4;
+        if (e[0]=='.' && (e[1]|32)=='e' && (e[2]|32)=='x' && (e[3]|32)=='e') return 0x0A; // .EXE green
+        if (e[0]=='.' && (e[1]|32)=='t' && (e[2]|32)=='x' && (e[3]|32)=='t') return 0x0E; // .txt yellow
+        if (e[0]=='.' && ((e[1]|32)=='i' || (e[1]|32)=='c'))                  return 0x0B; // .ini/.cfg cyan
+    }
+    // Prefix detection
+    if (len>=3 && buf[0]=='M' && buf[1]=='i' && buf[2]=='c') return 0x0D; // MicroNT -> magenta
+    if (len>=3 && buf[0]=='M' && buf[1]=='e' && buf[2]=='m') return 0x0B; // Memory  -> cyan
+    if (len>=3 && buf[0]=='S' && buf[1]=='y' && buf[2]=='s') return 0x0B; // System  -> cyan
+    if (len>=3 && buf[0]=='T' && buf[1]=='h' && buf[2]=='r') return 0x0B; // Thread  -> cyan
+    if (len>=2 && buf[0]=='O' && buf[1]=='K')                return 0x0A; // OK      -> green
+    if (len>=3 && (buf[0]|32)=='e' && (buf[1]|32)=='r' && (buf[2]|32)=='r') return 0x0C; // Err -> red
+    return 0x0F; // default bright white
+}
+
 void PrintUser(const char* buf, usize len) {
     EraseCursor();
     if (s_row < 1) s_row = 1;
@@ -491,11 +526,10 @@ void PrintUser(const char* buf, usize len) {
     // dir entries that the shell emits as separate '\n' writes).
     if (content_len == 0) { DrawCursorShape(); return; }
 
-    // Plain text output -- no [USER] prefix.
-    // [USER] is shown only by NtReadLine when it prints the input prompt.
-    u32 col = 0;
+    u8  color = ContentColor(buf, content_len);
+    u32 col   = 0;
     for (u32 i = 0; i < content_len && col < s_cols; ++i, ++col)
-        SetCell(s_row, col, (u8)buf[i], 0x0F);
+        SetCell(s_row, col, (u8)buf[i], color);
     for (; col < s_cols; ++col) SetCell(s_row, col, ' ', 0x07);
     ++s_row; s_col = 0;
     DrawCursorShape();
