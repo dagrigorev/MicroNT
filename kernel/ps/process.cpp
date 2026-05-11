@@ -32,6 +32,10 @@ static KThread*  s_main_thread    = nullptr;
 static KProcess* s_proc_reg[32] = {};
 static u32       s_proc_count   = 0;
 
+// M32: global thread registry (for kill-by-PID)
+static KThread*  s_thread_reg[64] = {};
+static u32       s_thread_count   = 0;
+
 static u32 s_next_pid = 0;
 static u32 s_next_tid = 0;
 
@@ -232,6 +236,8 @@ KThread* CreateUserThread(KProcess* process, const char* name,
 
     KDBG_TRACE("PS: CreateUserThread '%s' TID=%u entry=0x%llx user_rsp=0x%llx",
                t->Name, t->Tid, user_entry_va, user_stack_va);
+    // M32: register in global thread table for kill-by-PID
+    if (s_thread_count < 64) s_thread_reg[s_thread_count++] = t;
     return t;
 }
 
@@ -270,5 +276,46 @@ KThread*  MainThread()    { return s_main_thread; }
 
 u32 ProcessCount() { return s_proc_count; }
 KProcess* GetProcess(u32 i) { return i < s_proc_count ? s_proc_reg[i] : nullptr; }
+
+// M32: terminate all threads belonging to process with given PID.
+// Marks process as exited and all its threads as TERMINATED.
+bool KillProcess(u32 pid) {
+    // Find the process
+    KProcess* target = nullptr;
+    for (u32 i = 0; i < s_proc_count; ++i) {
+        if (s_proc_reg[i] && s_proc_reg[i]->Pid == pid &&
+            !s_proc_reg[i]->exited) {
+            target = s_proc_reg[i];
+            break;
+        }
+    }
+    if (!target) return false;
+
+    // Mark all its threads as terminated
+    for (u32 i = 0; i < s_thread_count; ++i) {
+        KThread* t = s_thread_reg[i];
+        if (t && t->Process == target &&
+            t->State != ThreadState::TERMINATED) {
+            t->State = ThreadState::TERMINATED;
+        }
+    }
+    // Mark process as exited and wake any waiters
+    target->thread_count = 0;
+    target->exited       = true;
+    target->ExitStatus   = -1;  // killed
+    KThread* w = target->exit_waiters;
+    target->exit_waiters = nullptr;
+    while (w) {
+        KThread* nxt = w->WaitNext;
+        w->WaitNext = nullptr;
+        Sched::UnblockThread(w);
+        w = nxt;
+    }
+    KDBG_INFO("PS: KillProcess PID=%u ('%s')", pid, target->Name);
+    return true;
+}
+
+u32 ThreadCount() { return s_thread_count; }
+KThread* GetThread(u32 i) { return i < s_thread_count ? s_thread_reg[i] : nullptr; }
 
 } // namespace PS

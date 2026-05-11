@@ -226,6 +226,60 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         }
 
         // ----------------------------------------------------------------
+        // ----------------------------------------------------------------
+        // M32: helpers used by kernel command handlers below
+        // ----------------------------------------------------------------
+        auto kprint = [](const char* s, u8 color) {
+            for (; *s; ++s) VGA::PutChar(*s, color);
+            VGA::PutChar('\n', 0x07);
+        };
+        auto kstrcmp = [](const char* a, const char* b, usize len) {
+            for (usize i = 0; i < len; ++i) if (a[i]!=b[i]) return false;
+            return true;
+        };
+        auto pfmt = [](char* buf, u64 v, u32 width) {
+            char tmp[20]; u32 n=0;
+            if (!v) { tmp[n++]='0'; }
+            else { u64 x=v; while(x){tmp[n++]='0'+(u8)(x%10);x/=10;} }
+            u32 pad = n<width ? width-n : 0;
+            u32 i=0;
+            while(pad--) buf[i++]=' ';
+            while(n)     buf[i++]=tmp[--n];
+            buf[i]=0;
+        };
+        auto DrawPsTable = [&]() {
+            const char* hdr = "   PID  Name                 State     Thds  Heap KB";
+            for (const char* p=hdr; *p; ++p) VGA::PutChar(*p, 0x0B);
+            VGA::PutChar('\n', 0x07);
+            const char* sep = "   -------------------------------------------------------";
+            for (const char* p=sep; *p; ++p) VGA::PutChar(*p, 0x08);
+            VGA::PutChar('\n', 0x07);
+            char numbuf[16];
+            for (u32 pi=0; pi<PS::ProcessCount(); ++pi) {
+                KProcess* proc = PS::GetProcess(pi);
+                if (!proc) continue;
+                pfmt(numbuf, proc->Pid, 5);
+                for (const char* p=numbuf; *p; ++p) VGA::PutChar(*p, 0x0A); // PID green
+                VGA::PutChar(' ', 0x07); VGA::PutChar(' ', 0x07);
+                u32 nlen=0;
+                for (; proc->Name[nlen]&&nlen<20; ++nlen) VGA::PutChar(proc->Name[nlen], 0x0F);
+                for (; nlen<20; ++nlen) VGA::PutChar(' ', 0x07);
+                VGA::PutChar(' ', 0x07);
+                const char* state="READY    "; u8 scol=0x0E;
+                if (proc->exited)              { state="EXITED   "; scol=0x08; }
+                else if (proc->thread_count>0) { state="RUNNING  "; scol=0x0A; }
+                for (const char* p=state; *p; ++p) VGA::PutChar(*p, scol);
+                pfmt(numbuf, proc->thread_count, 4);
+                for (const char* p=numbuf; *p; ++p) VGA::PutChar(*p, 0x0E); // threads yellow
+                constexpr u64 HEAP_BASE=0x500000000ULL;
+                u64 hkb = proc->UserHeapCursor>HEAP_BASE
+                          ? (proc->UserHeapCursor-HEAP_BASE)/1024 : 0;
+                pfmt(numbuf, hkb, 8);
+                for (const char* p=numbuf; *p; ++p) VGA::PutChar(*p, 0x0B); // heap cyan
+                VGA::PutChar('\n', 0x07);
+            }
+        };
+
         // M26/M27: keyboard line editor with history and tab completion
         // ----------------------------------------------------------------
         // Special key codes from keyboard.cpp (C0 range)
@@ -350,19 +404,56 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         linebuf[n] = '\0';
         HistAdd(linebuf, n);
 
-        // ---- M30: kernel-handled commands (shell binary doesn't know these) ----
-        // If we handle the command here, return 0 (empty line) so the shell
-        // just loops back to the next prompt without processing anything.
-        auto kstrcmp = [](const char* a, const char* b, usize len) {
-            for (usize i = 0; i < len; ++i)
-                if (a[i] != b[i]) return false;
-            return true;
-        };
-        auto kprint = [](const char* s, u8 color) {
-            for (; *s; ++s) VGA::PutChar(*s, color);
-            VGA::PutChar('\n', 0x07);
-        };
+        // ---- M30/M32: kernel-handled commands ----
+        // Return 0 (empty line) -> shell loops to next prompt without processing.
 
+        // ps -- visual process table (M32 override of shell's ps)
+        if (n == 2 && kstrcmp(linebuf, "ps", 2)) {
+            VGA::PutChar('\n', 0x07);
+            DrawPsTable();
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
+        // kill <pid>
+        if (n > 5 && kstrcmp(linebuf, "kill ", 5)) {
+            u32 pid = 0;
+            for (usize i = 5; i < n && linebuf[i]>='0' && linebuf[i]<='9'; ++i)
+                pid = pid*10 + (u32)(linebuf[i]-'0');
+            if (PS::KillProcess(pid)) kprint("Process killed.", 0x0A);
+            else                      kprint("PID not found or already exited.", 0x0C);
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
+        // bg <filename> -- spawn background process without waiting
+        if (n > 3 && kstrcmp(linebuf, "bg ", 3)) {
+            char bgname[64] = {};
+            usize bglen = n - 3 < 63 ? n - 3 : 63;
+            for (usize i = 0; i < bglen; ++i) bgname[i] = linebuf[3 + i];
+            usize fsize = 0;
+            const u8* fdata = VFS::FindFile(bgname, &fsize);
+            if (!fdata || !fsize) {
+                kprint("File not found.", 0x0C);
+            } else {
+                u64 ccr3 = VMM::CreateUserPml4();
+                KProcess* cp = ccr3 ? PS::CreateProcess(bgname, ccr3) : nullptr;
+                if (cp) {
+                    u64 image_base = 0x500000000ULL, entry_va = 0;
+                    LDR::LoadPe(fdata, fsize, ccr3, image_base, &entry_va);
+                    if (entry_va) {
+                        u64 stk = image_base + 0x100000ULL;
+                        constexpr usize CSTK=4;
+                        u64 fl=VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER;
+                        for (usize i=0;i<CSTK;++i){
+                            u64 pp=PMM::AllocPage(); if(!pp)break;
+                            u8* pb=(u8*)pp; for(usize j=0;j<PAGE_SIZE;++j)pb[j]=0;
+                            VMM::MapPageInto(ccr3,stk+i*PAGE_SIZE,pp,fl);
+                        }
+                        KThread* ct2=PS::CreateUserThread(cp,bgname,entry_va,stk+CSTK*PAGE_SIZE);
+                        if (ct2) { Sched::AddThread(ct2); kprint("Background process started.", 0x0A); }
+                        else kprint("Thread creation failed.", 0x0C);
+                    } else kprint("PE load failed.", 0x0C);
+                } else kprint("Process creation failed.", 0x0C);
+            }
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
         // mkdir <name>
         if (n > 6 && kstrcmp(linebuf, "mkdir ", 6)) {
             const char* dirname = linebuf + 6;
@@ -377,13 +468,13 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             else                    kprint("Not found.", 0x0C);
             WriteUserByte(pml4, a1, 0); return 0;
         }
-        // save  -- manually persist VFS to NVRAM
+        // save -- persist VFS to NVRAM
         if (n == 4 && kstrcmp(linebuf, "save", 4)) {
             VFS::SaveNVRAM();
             kprint("VFS saved to NVRAM.", 0x0A);
             WriteUserByte(pml4, a1, 0); return 0;
         }
-        // exit / Goodbye -- persist before shell exits
+        // exit -- persist before shell exits
         if (n >= 4 && kstrcmp(linebuf, "exit", 4))
             VFS::SaveNVRAM();
 

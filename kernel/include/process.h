@@ -123,6 +123,9 @@ KProcess* SystemProcess();
 KThread*  MainThread();
 u32       ProcessCount();    // M19: number of registered processes
 KProcess* GetProcess(u32 i); // M19: get process by registry index
+bool      KillProcess(u32 pid); // M32: terminate process and all its threads
+u32       ThreadCount();     // M32: number of registered threads
+KThread*  GetThread(u32 i);  // M32: get thread by registry index
 
 } // namespace PS
 
