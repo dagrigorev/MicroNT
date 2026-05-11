@@ -479,19 +479,25 @@ void Print(const char* s, u8 attr) {
 // Print a [USER] line: always at column 0 of s_row
 void PrintUser(const char* buf, usize len) {
     EraseCursor();
-    // Write directly into cells at s_row, bypassing s_col entirely
     if (s_row < 1) s_row = 1;
     if (s_row >= s_rows) Scroll();
+
+    // Count printable content (stop at first \n, \r, or \0)
+    u32 content_len = 0;
+    for (u32 i = 0; i < len && buf[i] && buf[i] != '\n' && buf[i] != '\r'; ++i)
+        ++content_len;
+
+    // Empty / pure-newline write: skip silently (suppresses blank rows between
+    // dir entries that the shell emits as separate '\n' writes).
+    if (content_len == 0) { DrawCursorShape(); return; }
+
+    // Plain text output -- no [USER] prefix.
+    // [USER] is shown only by NtReadLine when it prints the input prompt.
     u32 col = 0;
-    const char* pre = "[USER] ";
-    for (u32 i = 0; pre[i] && col < s_cols; ++i, ++col)
-        SetCell(s_row, col, (u8)pre[i], 0x0B);  // cyan
-    for (u32 i = 0; i < len && buf[i] && buf[i] != '\n' && buf[i] != '\r' && col < s_cols; ++i, ++col)
-        SetCell(s_row, col, (u8)buf[i], 0x0F);  // bright white
-    // Blank rest of row
+    for (u32 i = 0; i < content_len && col < s_cols; ++i, ++col)
+        SetCell(s_row, col, (u8)buf[i], 0x0F);
     for (; col < s_cols; ++col) SetCell(s_row, col, ' ', 0x07);
-    ++s_row;
-    s_col = 0;
+    ++s_row; s_col = 0;
     DrawCursorShape();
 }
 

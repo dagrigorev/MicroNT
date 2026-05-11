@@ -232,40 +232,138 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             return (u64)len;
         }
 
-        // // Keyboard fallback: collect chars until newline or buffer full
-        // usize maxlen = (usize)(a2 > 1 ? a2-1 : 1);
-        // Keyboard fallback: collect chars until Enter or buffer full.
-        // The returned command must not include the newline; queued commands
-        // above also return plain strings like "ver"/"exit".
-        usize maxlen = (usize)(a2 > 1 ? a2 - 1 : 0);
-        usize n = 0;
+        // ----------------------------------------------------------------
+        // M26/M27: keyboard line editor with history and tab completion
+        // ----------------------------------------------------------------
+        // Special key codes from keyboard.cpp (C0 range)
+        static constexpr char KEY_UP    = '\x10';
+        static constexpr char KEY_DOWN  = '\x11';
+
+        // -- Command history (M26) ----------------------------------------
+        static constexpr u32 HIST_N   = 16;
+        static constexpr u32 HIST_MAX = 256;
+        static char  s_hist[HIST_N][HIST_MAX];
+        static u32   s_hist_count = 0;
+        static u32   s_hist_head  = 0;  // next write slot (ring)
+
+        auto HistAdd = [&](const char* buf, usize len) {
+            if (len == 0) return;
+            // Skip if identical to the most recent entry
+            if (s_hist_count > 0) {
+                u32 prev = (s_hist_head + HIST_N - 1) % HIST_N;
+                bool same = true;
+                for (usize i = 0; i <= len && same; ++i)
+                    same = (s_hist[prev][i] == (i < len ? buf[i] : '\0'));
+                if (same) return;
+            }
+            usize n = len < HIST_MAX - 1 ? len : HIST_MAX - 1;
+            for (usize i = 0; i < n;  ++i) s_hist[s_hist_head][i] = buf[i];
+            s_hist[s_hist_head][n] = '\0';
+            s_hist_head = (s_hist_head + 1) % HIST_N;
+            if (s_hist_count < HIST_N) ++s_hist_count;
+        };
+
+        // back=1 -> most recent, back=2 -> second most recent, etc.
+        auto HistGet = [&](u32 back) -> const char* {
+            if (back == 0 || back > s_hist_count) return nullptr;
+            return s_hist[(s_hist_head + HIST_N - back) % HIST_N];
+        };
+
+        // -- Tab completion (M27) -----------------------------------------
+        static const char* const s_cmds[] = {
+            "ver","dir","mem","ps","exec","cat","echo",
+            "write","help","exit","clear","pipe", nullptr
+        };
+
+        auto TabComplete = [&](const char* buf, usize n) -> const char* {
+            const char* match = nullptr;
+            for (u32 i = 0; s_cmds[i]; ++i) {
+                const char* cmd = s_cmds[i];
+                bool ok = true;
+                for (usize j = 0; j < n && ok; ++j) ok = (cmd[j] == buf[j]);
+                if (!ok || cmd[n] == '\0') continue;  // no match or exact
+                if (match) return nullptr;             // ambiguous
+                match = cmd;
+            }
+            return match;
+        };
+
+        // -- Line editor loop ---------------------------------------------
+        char   linebuf[512] = {};
+        usize  n       = 0;
+        i32    hist_pos = 0;  // 0 = current draft, 1+ = history depth
+        usize  maxlen  = (usize)(a2 > 1 ? a2 - 1 : 0);
+
+        // Print "[USER] > " prompt on the current row -- cyan prefix, white ">",
+        // then leave the cursor here so typed characters appear on the same line.
+        {
+            const char* pre = "[USER] ";
+            for (u32 i = 0; pre[i]; ++i) VGA::PutChar(pre[i], 0x0B);  // cyan
+            VGA::PutChar('>', 0x0F);  // bright white
+            VGA::PutChar(' ', 0x07);
+        }
+
+        VGA::UpdateCursor();
+
         while (n < maxlen) {
             char ch = 0;
             while (!KB::TryRead(&ch)) { Sched::Sleep(10); }
-            // if (ch == '\b') { if (n>0) --n; continue; }
-            // WriteUserByte(pml4, a1+n, (u8)ch);
-            // if (ch == '\n') { ++n; break; }
-            //++n;
+
+            // Enter
             if (ch == '\n' || ch == '\r') {
                 VGA::PutChar('\n', 0x07);
                 break;
             }
 
+            // Backspace
             if (ch == '\b') {
-                if (n > 0) {
-                    --n;
-                    VGA::PutChar('\b', 0x0F);
+                if (n > 0) { --n; VGA::PutChar('\b', 0x0F); }
+                continue;
+            }
+
+            // Tab completion
+            if (ch == '\t') {
+                const char* comp = TabComplete(linebuf, n);
+                if (comp) {
+                    while (comp[n] && n < maxlen) {
+                        VGA::PutChar(comp[n], 0x0F);
+                        linebuf[n] = comp[n];
+                        ++n;
+                    }
                 }
                 continue;
             }
 
-            WriteUserByte(pml4, a1 + n, (u8)ch);
-            ++n;
+            // Arrow keys (history navigation)
+            if (ch == KEY_UP || ch == KEY_DOWN) {
+                i32 new_pos = hist_pos + (ch == KEY_UP ? 1 : -1);
+                if (new_pos < 0) new_pos = 0;
+                const char* entry = (new_pos == 0) ? nullptr : HistGet((u32)new_pos);
+                if (new_pos == 0 || entry) {
+                    // Erase current displayed line
+                    while (n > 0) { --n; VGA::PutChar('\b', 0x0F); }
+                    // Write history entry
+                    if (entry) {
+                        for (usize i = 0; entry[i] && n < maxlen; ++i) {
+                            linebuf[n] = entry[i];
+                            VGA::PutChar(entry[i], 0x0F);
+                            ++n;
+                        }
+                    }
+                    hist_pos = new_pos;
+                }
+                continue;
+            }
+
+            // Printable character
+            linebuf[n++] = ch;
             VGA::PutChar(ch, 0x0F);
         }
-        //WriteUserByte(pml4, a1+n, 0);
-        //VGA::PutChar('\n', 0x07);   // move to next line on screen
-        WriteUserByte(pml4, a1 + n, 0);
+
+        // Save to history and write to user buffer
+        linebuf[n] = '\0';
+        HistAdd(linebuf, n);
+        for (usize i = 0; i <= n; ++i) WriteUserByte(pml4, a1 + i, (u8)linebuf[i]);
         return (u64)n;
     }
 
@@ -342,7 +440,13 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             // M22: consumer.exe prints pipe content starting with "M22"
             if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='2')
                 g_m22_ok = 1;
-            // Mirror [USER] output to VGA console
+            // Suppress the shell's raw "> " prompt write.
+            // NtReadLine prints "[USER] > " itself so the input cursor
+            // appears on the same line as the prefix.
+            if (got == 2 && kbuf[0] == '>' && kbuf[1] == ' ') {
+                return (u64)STATUS_SUCCESS;
+            }
+            // Mirror output to VGA console (plain text, no prefix)
             VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }
         return (u64)STATUS_SUCCESS;
