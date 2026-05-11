@@ -346,33 +346,35 @@ static void SetCell(u32 r, u32 c, u8 ch, u8 attr) {
 }
 
 static void Scroll() {
-    // Move rows 1..ROWS-1 up by one (row 0 = header, never scrolled)
-    for (u32 r = 2; r < s_rows; ++r)
+    // Row 0 = header, row s_rows-1 = status bar -- scroll only rows 1..(s_rows-2)
+    u32 last = s_rows > 2 ? s_rows - 2 : 1;
+    for (u32 r = 2; r <= last; ++r)
         for (u32 c = 0; c < s_cols; ++c)
             s_cells[r-1][c] = s_cells[r][c];
     for (u32 c = 0; c < s_cols; ++c)
-        s_cells[s_rows-1][c] = { ' ', 0x07 };
+        s_cells[last][c] = { ' ', 0x07 };
     RedrawAll();
-    s_row = s_rows - 1;
+    s_row = last;
 }
 
 void PutChar(char ch, u8 attr) {
     EraseCursor();
+    // Clamp s_row: row 0 = header, last row = status bar
+    u32 max_row = s_rows > 1 ? s_rows - 2 : 1;
     if (ch == '\b') {
-        // Destructive backspace: erase previous character and move back
         if (s_col > 0) { --s_col; SetCell(s_row, s_col, ' ', 0x07); }
         DrawCursorShape(); return;
     }
     if (ch == '\r') { s_col = 0; DrawCursorShape(); return; }
     if (ch == '\n') {
         s_col = 0;
-        if (++s_row >= s_rows) Scroll();
+        if (++s_row > max_row) Scroll();
         DrawCursorShape(); return;
     }
     SetCell(s_row, s_col, ch, attr);
     if (++s_col >= s_cols) {
         s_col = 0;
-        if (++s_row >= s_rows) Scroll();
+        if (++s_row > max_row) Scroll();
     }
     DrawCursorShape();
 }
@@ -514,8 +516,9 @@ static u8 ContentColor(const char* buf, u32 len) {
 
 void PrintUser(const char* buf, usize len) {
     EraseCursor();
+    u32 max_row = s_rows > 1 ? s_rows - 2 : 1;
     if (s_row < 1) s_row = 1;
-    if (s_row >= s_rows) Scroll();
+    if (s_row > max_row) Scroll();
 
     // Count printable content (stop at first \n, \r, or \0)
     u32 content_len = 0;
@@ -531,8 +534,77 @@ void PrintUser(const char* buf, usize len) {
     for (u32 i = 0; i < content_len && col < s_cols; ++i, ++col)
         SetCell(s_row, col, (u8)buf[i], color);
     for (; col < s_cols; ++col) SetCell(s_row, col, ' ', 0x07);
-    ++s_row; s_col = 0;
+    if (++s_row > max_row) Scroll();
+    s_col = 0;
     DrawCursorShape();
+}
+
+// ---------------------------------------------------------------------------
+// M29: Live status bar
+// ---------------------------------------------------------------------------
+
+// Render one row of cells to the framebuffer (used for targeted redraws).
+static void RedrawRow(u32 r) {
+    for (u32 c = 0; c < s_cols; ++c) {
+        Cell& cell = s_cells[r][c];
+        DrawChar(c, r, cell.ch, AttrFg(cell.attr), AttrBg(cell.attr));
+    }
+}
+
+// Write a string into the cell buffer at (row, col) with attr, return end col.
+static u32 CellStr(u32 row, u32 col, const char* s, u8 attr) {
+    for (; *s && col < s_cols; ++s, ++col)
+        s_cells[row][col] = { (u8)*s, attr };
+    return col;
+}
+
+// Decimal format helpers (no libc).
+static void FmtU64(char* buf, u64 v, u32 width, char pad) {
+    char tmp[20]; u32 n = 0;
+    do { tmp[n++] = '0' + (v % 10); v /= 10; } while (v);
+    u32 total = n > width ? n : width;
+    for (u32 i = 0; i < total - n; ++i) *buf++ = pad;
+    for (u32 i = n; i > 0; --i) *buf++ = tmp[i-1];
+    *buf = 0;
+}
+
+// Called from PIT every 100 ticks (~1 s).  Updates:
+//   Row 0  right side: "Up: HH:MM:SS"
+//   Row s_rows-1      : status bar with keyboard hints
+void UpdateStatusBar(u64 ticks) {
+    if (!s_fb || s_cols < 20) return;
+
+    // ---- uptime in header (row 0, right-aligned) ----
+    u64 secs = ticks / 100;
+    u64 mins = secs / 60; secs %= 60;
+    u64 hrs  = mins / 60; mins %= 60;
+
+    char up[20] = "Up: ";
+    char tmp[8];
+    FmtU64(tmp, hrs,  2, '0'); for (u32 i=0;tmp[i];++i) up[4+i]=tmp[i];
+    up[6]=':';
+    FmtU64(tmp, mins, 2, '0'); up[7]=tmp[0]; up[8]=tmp[1];
+    up[9]=':';
+    FmtU64(tmp, secs, 2, '0'); up[10]=tmp[0]; up[11]=tmp[1];
+    up[12]=0;
+
+    u32 uplen = 12;  // "Up: HH:MM:SS"
+    u32 upcol = s_cols > uplen + 1 ? s_cols - uplen - 1 : 0;
+    for (u32 i = 0; i < uplen && upcol + i < s_cols; ++i)
+        s_cells[0][upcol + i] = { (u8)up[i], 0x1F };
+    RedrawRow(0);
+
+    // ---- bottom status bar (last row) ----
+    u32 bot = s_rows - 1;
+    // Fill with dark background (black bg, dark gray fg = 0x08)
+    for (u32 c = 0; c < s_cols; ++c) s_cells[bot][c] = { ' ', 0x78 }; // white on gray
+
+    const char* hints = "  Tab: complete   Up/Down: history   clear: reset screen   help: commands  ";
+    u32 col = 0;
+    for (const char* p = hints; *p && col < s_cols; ++p, ++col)
+        s_cells[bot][col] = { (u8)*p, 0x78 };
+
+    RedrawRow(bot);
 }
 
 } // namespace VGA
