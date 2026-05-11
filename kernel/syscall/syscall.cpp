@@ -77,26 +77,19 @@ static KPipe g_pipes[4];
 static constexpr u64 PIPE_HANDLE_BASE = 0x80;
 constexpr u64 NT_CREATE_NAMED_PIPE = 33;
 
-// M21: in-memory writable file table
-struct WFile { char name[32]; u8 data[512]; u32 size; bool used; };
-static WFile  g_wfiles[8];
+// M30: writable files delegated to VFS::WNode table.
+// Handle range 0x40-0x4F maps to VFS WNode indices 0-15.
 static constexpr u64 WFILE_HANDLE_BASE = 0x40;
+static constexpr u64 WFILE_HANDLE_MAX  = 0x50;
 
 static u64 WFindOrCreate(const char* name) {
-    for (u32 i=0;i<8;++i) if (g_wfiles[i].used) {
-        bool ok=true; for(int j=0;j<31;++j){if(g_wfiles[i].name[j]!=name[j]){ok=false;break;}if(!name[j])break;}
-        if (ok) return i;
-    }
-    for (u32 i=0;i<8;++i) if (!g_wfiles[i].used) {
-        g_wfiles[i].used=true; g_wfiles[i].size=0;
-        for(int j=0;j<31&&name[j];++j) g_wfiles[i].name[j]=name[j];
-        return i;
-    }
-    return 0xFF;
+    u32 idx = VFS::WFindOrCreate(name, false);
+    return idx < 16 ? (u64)idx : 0xFF;
 }
-constexpr u64 MUTANT_MAX          = 8;
 
-// Command queue (pre-populated by kernel_main for M9 test)
+constexpr u64 MUTANT_MAX = 8;
+
+// Command queue (pre-populated by kernel_main for automated tests)
 static const char* s_cmds[8] = {};
 static u32         s_cmd_count = 0;
 static u32         s_cmd_idx   = 0;
@@ -363,6 +356,44 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         // Save to history and write to user buffer
         linebuf[n] = '\0';
         HistAdd(linebuf, n);
+
+        // ---- M30: kernel-handled commands (shell binary doesn't know these) ----
+        // If we handle the command here, return 0 (empty line) so the shell
+        // just loops back to the next prompt without processing anything.
+        auto kstrcmp = [](const char* a, const char* b, usize len) {
+            for (usize i = 0; i < len; ++i)
+                if (a[i] != b[i]) return false;
+            return true;
+        };
+        auto kprint = [](const char* s, u8 color) {
+            for (; *s; ++s) VGA::PutChar(*s, color);
+            VGA::PutChar('\n', 0x07);
+        };
+
+        // mkdir <name>
+        if (n > 6 && kstrcmp(linebuf, "mkdir ", 6)) {
+            const char* dirname = linebuf + 6;
+            if (VFS::MkDir(dirname)) kprint("Directory created.", 0x0A);
+            else                     kprint("Already exists or table full.", 0x0C);
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
+        // rm <name>
+        if (n > 3 && kstrcmp(linebuf, "rm ", 3)) {
+            const char* fname = linebuf + 3;
+            if (VFS::Delete(fname)) kprint("Deleted.", 0x0A);
+            else                    kprint("Not found.", 0x0C);
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
+        // save  -- manually persist VFS to NVRAM
+        if (n == 4 && kstrcmp(linebuf, "save", 4)) {
+            VFS::SaveNVRAM();
+            kprint("VFS saved to NVRAM.", 0x0A);
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
+        // exit / Goodbye -- persist before shell exits
+        if (n >= 4 && kstrcmp(linebuf, "exit", 4))
+            VFS::SaveNVRAM();
+
         for (usize i = 0; i <= n; ++i) WriteUserByte(pml4, a1 + i, (u8)linebuf[i]);
         return (u64)n;
     }
@@ -384,19 +415,15 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             }
             return (u64)written;
         }
-        if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_BASE+8) {
-            WFile& wf = g_wfiles[a1 - WFILE_HANDLE_BASE];
-            if (!wf.used) return 0;
+        if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_MAX) {
+            u32 widx = (u32)(a1 - WFILE_HANDLE_BASE);
             KThread* t2 = Sched::CurrentThread();
             if (!t2 || !t2->Process) return 0;
             u64 pml4w = t2->Process->Cr3;
-            usize wlen = (usize)(a3 > 512 ? 512 : a3);
-            usize written = 0;
-            while (written < wlen && wf.size < 512) {
-                wf.data[wf.size++] = ReadUserByte(pml4w, a2 + written);
-                ++written;
-            }
-            return (u64)written;
+            usize wlen = (usize)(a3 > 2048 ? 2048 : a3);
+            u8 wbuf[2048];
+            for (usize i = 0; i < wlen; ++i) wbuf[i] = ReadUserByte(pml4w, a2 + i);
+            return (u64)VFS::WWrite(widx, wbuf, (u32)wlen);
         }
         u64 user_va = a2;
         usize len   = (usize)(a3 > 512 ? 512 : a3);
@@ -715,7 +742,7 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         if (h >= 0) return (u64)(h + 1);   // VFS handle: 1..3F
         // M21: not in VFS -> find or create in writable table
         u64 wi = WFindOrCreate(kpath);
-        return wi < 8 ? (WFILE_HANDLE_BASE + wi) : 0;
+        return wi < 16 ? (WFILE_HANDLE_BASE + wi) : 0;
     }
 
     case NT_READ_FILE: {
@@ -752,15 +779,12 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 WriteUserByte(pml4p, a2+i, kp.data[(usize)a3+i]);
             return (u64)len;
         }
-        if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_BASE+8) {
-            // M21: read from writable file table
-            WFile& wf = g_wfiles[a1 - WFILE_HANDLE_BASE];
-            if (!wf.used || a3 >= wf.size) return 0;
-            usize avail = wf.size - (usize)a3;
-            if (len > avail) len = avail;
-            for (usize i=0; i<len; ++i)
-                WriteUserByte(pml4, a2+i, wf.data[(usize)a3+i]);
-            return (u64)len;
+        if (a1 >= WFILE_HANDLE_BASE && a1 < WFILE_HANDLE_MAX) {
+            u32 widx = (u32)(a1 - WFILE_HANDLE_BASE);
+            u8 rbuf[2048];
+            u32 got2 = VFS::WRead(widx, a3, rbuf, (u32)len);
+            for (u32 i = 0; i < got2; ++i) WriteUserByte(pml4, a2+i, rbuf[i]);
+            return (u64)got2;
         }
 
         i32 h = (i32)((i64)a1 - 1);
@@ -799,13 +823,21 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             if (cb_args.pos < cb_args.end)
                 WriteUserByte(cb_args.pml4, cb_args.pos++, 0);
         });
-        // M21: also list writable files
-        for (u32 i = 0; i < 8 && cb_args.pos < cb_args.end - 2; ++i) {
-            if (!g_wfiles[i].used) continue;
-            for (usize j = 0; g_wfiles[i].name[j] && cb_args.pos < cb_args.end; ++j)
-                WriteUserByte(cb_args.pml4, cb_args.pos++, (u8)g_wfiles[i].name[j]);
+        // M30: list writable nodes (files and directories)
+        VFS::ForEachWritable([](const char* name, u32 /*size*/, bool is_dir) {
+            if (cb_args.pos >= cb_args.end - 4) return;
+            // Prefix dirs with '[' and suffix with ']' so dir command shows type
+            if (is_dir) {
+                WriteUserByte(cb_args.pml4, cb_args.pos++, '[');
+                for (usize j = 0; name[j] && cb_args.pos < cb_args.end; ++j)
+                    WriteUserByte(cb_args.pml4, cb_args.pos++, (u8)name[j]);
+                WriteUserByte(cb_args.pml4, cb_args.pos++, ']');
+            } else {
+                for (usize j = 0; name[j] && cb_args.pos < cb_args.end; ++j)
+                    WriteUserByte(cb_args.pml4, cb_args.pos++, (u8)name[j]);
+            }
             WriteUserByte(cb_args.pml4, cb_args.pos++, 0);
-        }
+        });
         if (cb_args.pos < end) WriteUserByte(pml4, cb_args.pos++, 0);
         return cb_args.pos - a1;
     }

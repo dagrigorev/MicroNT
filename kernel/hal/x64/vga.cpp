@@ -497,6 +497,8 @@ void Print(const char* s, u8 attr) {
 // Detect a display color for a line of output based on content.
 static u8 ContentColor(const char* buf, u32 len) {
     if (len == 0) return 0x0F;
+    // Directory entries are wrapped in [brackets] by NT_QUERY_DIR
+    if (len >= 3 && buf[0] == '[' && buf[len-1] == ']') return 0x0E; // yellow
     // File extensions (last 4 chars)
     if (len >= 4) {
         const char* e = buf + len - 4;

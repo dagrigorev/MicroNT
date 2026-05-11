@@ -41,6 +41,8 @@ struct MicroNTBootInfo {
     unsigned int        fb_height;        // vertical resolution in pixels
     unsigned int        fb_stride;        // pixels per scan line (may be > width)
     unsigned int        fb_format;        // 0=RGBX, 1=BGRX (EFI pixel format)
+    // M30: UEFI runtime services pointer (valid after ExitBootServices)
+    unsigned long long  efi_runtime_va;   // EFI_RUNTIME_SERVICES* (identity-mapped)
     BootFile            boot_files[BOOT_FILES_MAX];
     BootMemoryEntry     memory_map[BOOT_MEMORY_MAX];
 };
