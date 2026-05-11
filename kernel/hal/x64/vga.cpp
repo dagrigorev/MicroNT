@@ -494,7 +494,136 @@ void Print(const char* s, u8 attr) {
 }
 
 // Print a [USER] line: always at column 0 of s_row
-// Detect a display color for a line of output based on content.
+// ---- M31: visual memory bar -----------------------------------------
+// Parse an unsigned decimal from buf[i..], advance i, return value.
+static u64 ParseU64(const char* buf, u32 len, u32& i) {
+    u64 v = 0;
+    while (i < len && buf[i] >= '0' && buf[i] <= '9') v = v*10 + (buf[i++]-'0');
+    return v;
+}
+
+// Draw a number right-aligned into cells at (row, col), returns end col.
+static u32 CellNum(u32 row, u32 col, u64 v, u8 attr) {
+    char tmp[20]; u32 n = 0;
+    if (v == 0) { tmp[n++] = '0'; }
+    else { u64 x = v; while(x){ tmp[n++]='0'+(u8)(x%10); x/=10; } }
+    // reverse
+    for (u32 a=0,b=n-1; a<b; ++a,--b) { char t=tmp[a]; tmp[a]=tmp[b]; tmp[b]=t; }
+    for (u32 j = 0; j < n && col < s_cols; ++j, ++col)
+        SetCell(row, col, (u8)tmp[j], attr);
+    return col;
+}
+
+// Render multi-row visual memory panel.  Returns true if it consumed the line.
+static bool TryDrawMemBar(const char* buf, u32 len) {
+    // Expects: "Memory: Free=F KB Used=U KB Total=T KB Pages=P/Q"
+    if (len < 7 || buf[0]!='M'||buf[1]!='e'||buf[2]!='m'||
+                    buf[3]!='o'||buf[4]!='r'||buf[5]!='y'||buf[6]!=':') return false;
+
+    u64 free_kb=0, used_kb=0, total_kb=0, used_pages=0, total_pages=0;
+    for (u32 i = 7; i < len; ) {
+        // Skip to next letter
+        while (i < len && (buf[i]==' '||buf[i]=='\t')) ++i;
+        if (i >= len) break;
+        // Match keyword=value
+        auto match = [&](const char* kw) {
+            u32 k=0; u32 j=i;
+            while (kw[k] && j<len && buf[j]==kw[k]) { ++k; ++j; }
+            if (!kw[k]) { i=j; return true; }
+            return false;
+        };
+        if      (match("Free="))  { free_kb     = ParseU64(buf,len,i); }
+        else if (match("Used="))  { used_kb     = ParseU64(buf,len,i); }
+        else if (match("Total=")) { total_kb    = ParseU64(buf,len,i); }
+        else if (match("Pages=")) {
+            used_pages  = ParseU64(buf,len,i);
+            if (i < len && buf[i]=='/') { ++i; total_pages = ParseU64(buf,len,i); }
+        }
+        else ++i;  // skip one char
+    }
+    if (total_kb == 0) return false;
+
+    u32 max_row = s_rows > 1 ? s_rows - 2 : 1;
+    EraseCursor();
+
+    // Helper: fill a row from col c with string s in attr, blank the rest
+    auto rowstr = [&](u32 r, u32 c, const char* s, u8 attr) {
+        for (; *s && c < s_cols; ++s, ++c) SetCell(r, c, (u8)*s, attr);
+        for (; c < s_cols; ++c) SetCell(r, c, ' ', 0x07);
+    };
+    auto advance = [&]() {
+        if (s_row > max_row) Scroll();
+    };
+
+    // ---- Row 1: title ----
+    advance();
+    rowstr(s_row, 0, "  Memory Map", 0x0B);  // cyan
+    ++s_row;
+
+    // ---- Row 2: bar ----
+    advance();
+    u32 bar_w = s_cols > 24 ? s_cols - 22 : 10;
+    u64 pct   = total_kb ? (used_kb * 100) / total_kb : 0;
+    u32 filled = (u32)((pct * bar_w) / 100);
+
+    u32 c = 0;
+    SetCell(s_row, c++, ' ', 0x07);
+    SetCell(s_row, c++, ' ', 0x07);
+    SetCell(s_row, c++, '[', 0x0F);
+    for (u32 k = 0; k < bar_w; ++k, ++c) {
+        // 0xA0 = light-green bg / 0x80 = dark-gray bg, space char
+        SetCell(s_row, c, ' ', k < filled ? 0xA0u : 0x80u);
+    }
+    SetCell(s_row, c++, ']', 0x0F);
+    SetCell(s_row, c++, ' ', 0x07);
+    // Percentage: "XX%"
+    c = CellNum(s_row, c, pct, 0x0F);
+    SetCell(s_row, c++, '%', 0x07);
+    // Pad rest
+    for (; c < s_cols; ++c) SetCell(s_row, c, ' ', 0x07);
+    ++s_row;
+
+    // ---- Row 3: KB detail ----
+    advance();
+    {
+        const char* lab = "  Used: "; u32 cc = 0;
+        for (; *lab && cc < s_cols; ++lab, ++cc) SetCell(s_row, cc, (u8)*lab, 0x08);
+        cc = CellNum(s_row, cc, used_kb,  0x0F);
+        const char* sep1 = " KB   Free: ";
+        for (; *sep1 && cc < s_cols; ++sep1, ++cc) SetCell(s_row, cc, (u8)*sep1, 0x08);
+        cc = CellNum(s_row, cc, free_kb,  0x0A);
+        const char* sep2 = " KB   Total: ";
+        for (; *sep2 && cc < s_cols; ++sep2, ++cc) SetCell(s_row, cc, (u8)*sep2, 0x08);
+        cc = CellNum(s_row, cc, total_kb, 0x0B);
+        const char* sfx = " KB";
+        for (; *sfx && cc < s_cols; ++sfx, ++cc) SetCell(s_row, cc, (u8)*sfx, 0x08);
+        for (; cc < s_cols; ++cc) SetCell(s_row, cc, ' ', 0x07);
+        ++s_row;
+    }
+
+    // ---- Row 4: page detail (if we have page data) ----
+    if (total_pages > 0) {
+        advance();
+        const char* lab = "  Pages: Used="; u32 cc = 0;
+        for (; *lab && cc < s_cols; ++lab, ++cc) SetCell(s_row, cc, (u8)*lab, 0x08);
+        cc = CellNum(s_row, cc, used_pages,  0x0F);
+        const char* sep = "  Free=";
+        for (; *sep && cc < s_cols; ++sep, ++cc) SetCell(s_row, cc, (u8)*sep, 0x08);
+        u64 free_pages = (used_pages <= total_pages) ? (total_pages - used_pages) : 0;
+        cc = CellNum(s_row, cc, free_pages, 0x0A);
+        const char* sep2 = "  Total=";
+        for (; *sep2 && cc < s_cols; ++sep2, ++cc) SetCell(s_row, cc, (u8)*sep2, 0x08);
+        cc = CellNum(s_row, cc, total_pages, 0x0B);
+        for (; cc < s_cols; ++cc) SetCell(s_row, cc, ' ', 0x07);
+        ++s_row;
+    }
+
+    s_col = 0;
+    DrawCursorShape();
+    return true;
+}
+
+
 static u8 ContentColor(const char* buf, u32 len) {
     if (len == 0) return 0x0F;
     // Directory entries are wrapped in [brackets] by NT_QUERY_DIR
@@ -530,6 +659,24 @@ void PrintUser(const char* buf, usize len) {
     // Empty / pure-newline write: skip silently (suppresses blank rows between
     // dir entries that the shell emits as separate '\n' writes).
     if (content_len == 0) { DrawCursorShape(); return; }
+
+    // M31 fix: detect the shell's "> " prompt specifically.
+    // Show it as "[USER] > " with cursor held on the same row so typed
+    // characters follow on that line.  Every other write is plain output.
+    if (content_len == 2 && buf[0] == '>' && buf[1] == ' ') {
+        u32 col = 0;
+        const char* pre = "[USER] ";
+        for (; *pre && col < s_cols; ++pre, ++col) SetCell(s_row, col, (u8)*pre, 0x0B);
+        SetCell(s_row, col++, '>', 0x0F);
+        SetCell(s_row, col++, ' ', 0x07);
+        for (u32 c = col; c < s_cols; ++c) SetCell(s_row, c, ' ', 0x07);
+        s_col = col;  // cursor right after "> "
+        DrawCursorShape();
+        return;
+    }
+
+    // M31: intercept "Memory: ..." and render visual bar panel
+    if (TryDrawMemBar(buf, content_len)) return;
 
     u8  color = ContentColor(buf, content_len);
     u32 col   = 0;

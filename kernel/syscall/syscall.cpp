@@ -287,15 +287,8 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         i32    hist_pos = 0;  // 0 = current draft, 1+ = history depth
         usize  maxlen  = (usize)(a2 > 1 ? a2 - 1 : 0);
 
-        // Print "[USER] > " prompt on the current row -- cyan prefix, white ">",
-        // then leave the cursor here so typed characters appear on the same line.
-        {
-            const char* pre = "[USER] ";
-            for (u32 i = 0; pre[i]; ++i) VGA::PutChar(pre[i], 0x0B);  // cyan
-            VGA::PutChar('>', 0x0F);  // bright white
-            VGA::PutChar(' ', 0x07);
-        }
-
+        // Prompt is printed by the shell via NtWriteFile("> ") which PrintUser
+        // intercepts and renders as "[USER] > " with the cursor held on that row.
         VGA::UpdateCursor();
 
         while (n < maxlen) {
@@ -467,12 +460,6 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             // M22: consumer.exe prints pipe content starting with "M22"
             if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='2')
                 g_m22_ok = 1;
-            // Suppress the shell's raw "> " prompt write.
-            // NtReadLine prints "[USER] > " itself so the input cursor
-            // appears on the same line as the prefix.
-            if (got == 2 && kbuf[0] == '>' && kbuf[1] == ' ') {
-                return (u64)STATUS_SUCCESS;
-            }
             // Mirror output to VGA console (plain text, no prefix)
             VGA::PrintUser(reinterpret_cast<const char*>(kbuf), (usize)got);
         }
@@ -620,28 +607,33 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         usize maxlen = (usize)(a3 > 256 ? 256 : a3);
 
         const char* str = nullptr;
-        char membuf[64] = {};
+        char membuf[128] = {};
 
         if (a1 == 0) {
-            str = "MicroNT Version M19\r\n";
+            str = "MicroNT Version M31\r\n";
         } else if (a1 == 1) {
-            // Memory stats: approximate from PMM free pages
-            u64 free_kb = (u64)PMM::FreePages() * (PAGE_SIZE / 1024);
-            u64 total_kb = free_kb + (u64)PMM::UsedPages() * (PAGE_SIZE / 1024);
-            // Simple itoa for KB values
+            // Memory stats: provide enough data for visual bar rendering
+            u64 free_pages  = (u64)PMM::FreePages();
+            u64 used_pages  = (u64)PMM::UsedPages();
+            u64 total_pages = (u64)PMM::TotalPages();
+            u64 free_kb     = free_pages  * (PAGE_SIZE / 1024);
+            u64 used_kb     = used_pages  * (PAGE_SIZE / 1024);
+            u64 total_kb    = total_pages * (PAGE_SIZE / 1024);
             auto itoa_k = [](char* buf, u64 v) -> usize {
                 if (v == 0) { buf[0]='0'; buf[1]='\0'; return 1; }
-                usize i=0; char tmp[20]; usize n=0;
+                char tmp[20]; usize n=0;
                 while(v>0){tmp[n++]='0'+(v%10);v/=10;}
-                while(n>0) buf[i++]=tmp[--n]; buf[i]='\0'; return i;
+                usize i=0; while(n>0) buf[i++]=tmp[--n]; buf[i]='\0'; return i;
             };
             char* p = membuf;
-            const char* pfx = "Memory: Free="; while(*pfx) *p++=*pfx++;
-            p += itoa_k(p, free_kb);
-            const char* mid = " KB Total="; while(*mid) *p++=*mid++;
-            p += itoa_k(p, total_kb);
-            const char* sfx = " KB\r\n"; while(*sfx) *p++=*sfx++;
-            *p = '\0';
+            // Format: "Memory: Free=X KB Used=Y KB Total=Z KB Pages=A/B\r\n"
+            auto app = [&](const char* s) { while(*s) *p++=*s++; };
+            app("Memory: Free=");  p += itoa_k(p, free_kb);
+            app(" KB Used=");      p += itoa_k(p, used_kb);
+            app(" KB Total=");     p += itoa_k(p, total_kb);
+            app(" KB Pages=");     p += itoa_k(p, used_pages);
+            app("/");              p += itoa_k(p, total_pages);
+            app("\r\n");           *p = '\0';
             str = membuf;
         }
         if (a1 == 2) {
