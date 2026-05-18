@@ -13,6 +13,7 @@
 #include "../include/pe.h"
 #include "../include/io.h"
 #include "../include/csrss.h"
+#include "../include/dwm.h"
 #include "../include/session.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -247,6 +248,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
     CSRSS::Init();
     WIN32K::Init();
+    DWM::Init();
     WINLOGON::Init();
     USERINIT::Init();
     SM::Init();

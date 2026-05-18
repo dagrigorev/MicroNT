@@ -3,6 +3,7 @@
 #include "../include/session.h"
 #include "../include/csrss.h"
 #include "../include/debug.h"
+#include "../include/dwm.h"
 #include "../include/process.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -13,6 +14,7 @@ namespace SM {
 static InteractiveSession s_interactive{};
 static CSRSS::Win32Session s_win32{};
 static WIN32K::SessionGraphics s_graphics{};
+static DWM::Compositor s_compositor{};
 static WINLOGON::LogonSession s_logon{};
 static u32 s_next_session_id = 1;
 
@@ -53,6 +55,7 @@ void Init() {
     s_interactive = {};
     s_win32 = {};
     s_graphics = {};
+    s_compositor = {};
     s_logon = {};
     s_next_session_id = 1;
     Debug::Print("[SMSS] Session manager initialized\r\n");
@@ -65,11 +68,11 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(WIN32K::AttachSession(s_graphics, s_win32));
     KASSERT(WinlogonStart(session));
     KASSERT(UserinitStart(session));
-    KASSERT(WIN32K::StartDwm(s_graphics));
+    KASSERT(DWM::Start(s_compositor, s_graphics));
 
     KThread* shell = ExplorerStart(session, cfg);
 
-    WIN32K::PresentShellDesktop(s_graphics);
+    DWM::PresentShellDesktop(s_compositor);
 
     Sched::AddThread(shell);
     Debug::Printf("[EXPLORER] Session %u shell started\r\n", session.SessionId);

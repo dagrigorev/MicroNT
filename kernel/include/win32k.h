@@ -13,12 +13,9 @@ namespace WIN32K {
 struct SessionGraphics {
     u32  SessionId;
     bool Win32Attached;
-    bool DwmReady;
 };
 
 void Init();
 bool AttachSession(SessionGraphics& graphics, const CSRSS::Win32Session& session);
-bool StartDwm(SessionGraphics& graphics);
-void PresentShellDesktop(SessionGraphics& graphics);
 
 } // namespace WIN32K
