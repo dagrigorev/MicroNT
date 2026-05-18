@@ -12,6 +12,7 @@
 
 namespace SM {
 
+static SystemSession s_system{};
 static InteractiveSession s_interactive{};
 static CSRSS::Win32Session s_win32{};
 static WIN32K::SessionGraphics s_graphics{};
@@ -19,6 +20,13 @@ static DWM::Compositor s_compositor{};
 static EXPLORER::Shell s_shell{};
 static WINLOGON::LogonSession s_logon{};
 static u32 s_next_session_id = 1;
+
+static bool SmssCreateSystemSession(SystemSession& session) {
+    session.SessionId = 0;
+    session.ServicesReady = true;
+    Debug::Print("[SMSS] Session 0 system services ready\r\n");
+    return true;
+}
 
 static bool SmssCreateSession(InteractiveSession& session) {
     session.SessionId = s_next_session_id++;
@@ -55,6 +63,7 @@ static bool ExplorerStart(InteractiveSession& session,
 }
 
 void Init() {
+    s_system = {};
     s_interactive = {};
     s_win32 = {};
     s_graphics = {};
@@ -63,6 +72,7 @@ void Init() {
     s_logon = {};
     s_next_session_id = 1;
     Debug::Print("[SMSS] Session manager initialized\r\n");
+    KASSERT(SmssCreateSystemSession(s_system));
 }
 
 InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {

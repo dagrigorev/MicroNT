@@ -26,6 +26,11 @@ struct InteractiveSession {
     KThread*  ShellThread;
 };
 
+struct SystemSession {
+    u32  SessionId;
+    bool ServicesReady;
+};
+
 void Init();
 InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg);
 
