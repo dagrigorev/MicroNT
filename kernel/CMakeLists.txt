@@ -64,6 +64,9 @@ set(KERNEL_SOURCES
     ps/scheduler.cpp
     ps/switch.asm
 
+    # Session manager / interactive shell bootstrap
+    sm/session_manager.cpp
+
     # I/O
     io/console.cpp
     io/vfs.cpp

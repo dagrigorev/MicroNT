@@ -136,6 +136,7 @@ void Print(u16 port, const char* str);
 namespace VGA {
     void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt);
     void Init();
+    void StartDesktop();       // XP-style desktop shell over GOP framebuffer
     void ClearScreen();        // fast clear rows 1+, keeps header bar
     void WriteWelcome();
     void Print(const char* s, u8 attr = 0x07);

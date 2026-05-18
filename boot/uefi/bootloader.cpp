@@ -321,6 +321,48 @@ static void FillMemoryMap(MicroNTBootInfo* bi, EFI_MEMORY_DESCRIPTOR* map,
     PrintDec(totalMB); Print(" MB available\n");
 }
 
+static void SelectFullHdGopMode(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
+    if (!gop || !gop->Mode || !gop->QueryMode || !gop->SetMode) return;
+
+    UINT32 fullHdMode = 0xFFFFFFFFu;
+    UINT32 bestMode = gop->Mode->Mode;
+    UINT32 bestPixels = 0;
+
+    for (UINT32 mode = 0; mode < gop->Mode->MaxMode; ++mode) {
+        UINTN infoSize = 0;
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* info = nullptr;
+        EFI_STATUS st = gop->QueryMode(gop, mode, &infoSize, &info);
+        if (EFI_IS_ERROR(st) || !info) continue;
+        if (info->PixelFormat == PixelBltOnly) continue;
+
+        UINT32 w = info->HorizontalResolution;
+        UINT32 h = info->VerticalResolution;
+        UINT32 pixels = w * h;
+        if (w == 1920 && h == 1080) {
+            fullHdMode = mode;
+            gBS->FreePool(info);
+            break;
+        }
+        if (pixels > bestPixels && w <= 1920 && h <= 1080) {
+            bestPixels = pixels;
+            bestMode = mode;
+        }
+        gBS->FreePool(info);
+    }
+
+    UINT32 target = (fullHdMode != 0xFFFFFFFFu) ? fullHdMode : bestMode;
+    if (target != gop->Mode->Mode) {
+        EFI_STATUS st = gop->SetMode(gop, target);
+        if (!EFI_IS_ERROR(st)) {
+            Print("[BL] GOP mode selected: ");
+            if (fullHdMode != 0xFFFFFFFFu) Print("1920x1080\n");
+            else Print("best available <= 1920x1080\n");
+        } else {
+            Print("[BL] GOP SetMode failed, keeping firmware mode\n");
+        }
+    }
+}
+
 // ============================================================
 // EFI Entry Point
 // ============================================================
@@ -441,6 +483,7 @@ extern "C" EFI_STATUS EfiMain(EFI_HANDLE ImageHandle,
         EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = nullptr;
         EFI_STATUS gs = gBS->LocateProtocol(&gopGuid, nullptr, (void**)&gop);
         if (!EFI_IS_ERROR(gs) && gop && gop->Mode) {
+            SelectFullHdGopMode(gop);
             bi->fb_base   = (unsigned long long)gop->Mode->FrameBufferBase;
             bi->fb_width  = gop->Mode->Info->HorizontalResolution;
             bi->fb_height = gop->Mode->Info->VerticalResolution;

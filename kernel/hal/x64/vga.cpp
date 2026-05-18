@@ -281,6 +281,8 @@ static u32 s_rows = 25;
 static u32 s_row  = 1;
 static u32 s_col  = 0;
 static bool s_cursor_visible = false;  // is cursor currently drawn?
+static u32 s_origin_x = 0;             // pixel origin of the text surface
+static u32 s_origin_y = 0;
 
 static constexpr u32 CHAR_W = 8;
 static constexpr u32 CHAR_H = 16;
@@ -307,12 +309,97 @@ static u32 AttrBg(u8 attr) { return ToPixel(s_palette[(attr >> 4) & 0x07]); }
 static void EraseCursor();
 static void DrawCursorShape();
 
+static void FillRect(u32 x, u32 y, u32 w, u32 h, u32 rgb) {
+    if (!s_fb || x >= s_fb_w || y >= s_fb_h) return;
+    if (x + w > s_fb_w) w = s_fb_w - x;
+    if (y + h > s_fb_h) h = s_fb_h - y;
+    u32 px = ToPixel(rgb);
+    for (u32 yy = 0; yy < h; ++yy) {
+        u32* row = s_fb + (y + yy) * s_fb_stride + x;
+        for (u32 xx = 0; xx < w; ++xx) row[xx] = px;
+    }
+}
+
+static void RectOutline(u32 x, u32 y, u32 w, u32 h, u32 light, u32 dark) {
+    if (w < 2 || h < 2) return;
+    FillRect(x, y, w, 1, light);
+    FillRect(x, y, 1, h, light);
+    FillRect(x, y + h - 1, w, 1, dark);
+    FillRect(x + w - 1, y, 1, h, dark);
+}
+
+static void FillVerticalGradient(u32 x, u32 y, u32 w, u32 h, u32 top, u32 bottom) {
+    if (h == 0) return;
+    int tr = (top >> 16) & 0xFF, tg = (top >> 8) & 0xFF, tb = top & 0xFF;
+    int br = (bottom >> 16) & 0xFF, bg = (bottom >> 8) & 0xFF, bb = bottom & 0xFF;
+    for (u32 yy = 0; yy < h; ++yy) {
+        u32 r = (u32)(tr + ((br - tr) * (int)yy) / (int)h);
+        u32 g = (u32)(tg + ((bg - tg) * (int)yy) / (int)h);
+        u32 b = (u32)(tb + ((bb - tb) * (int)yy) / (int)h);
+        FillRect(x, y + yy, w, 1, (r << 16) | (g << 8) | b);
+    }
+}
+
+static void DrawGlyphAbs(u32 px, u32 py, u8 ch, u32 fg, u32 bg) {
+    if (!s_fb) return;
+    const u8* g = &s_font[(u32)ch * 16];
+    for (u32 r = 0; r < CHAR_H; ++r) {
+        if (py + r >= s_fb_h) break;
+        u32* line = s_fb + (py + r) * s_fb_stride + px;
+        u8 bits = g[r];
+        for (u32 c = 0; c < CHAR_W; ++c) {
+            if (px + c < s_fb_w)
+                line[c] = (bits & (0x80u >> c)) ? fg : bg;
+        }
+    }
+}
+
+static void DrawTextAbs(u32 x, u32 y, const char* s, u32 fg, u32 bg) {
+    for (u32 i = 0; s[i]; ++i)
+        DrawGlyphAbs(x + i * CHAR_W, y, (u8)s[i], ToPixel(fg), ToPixel(bg));
+}
+
+static void DrawDesktopIcon(u32 x, u32 y, const char* label, u32 body, u32 shade) {
+    FillRect(x + 10, y + 4, 36, 32, body);
+    FillRect(x + 16, y, 26, 10, shade);
+    RectOutline(x + 10, y + 4, 36, 32, 0xFFFFFF, 0x5C6F90);
+    DrawTextAbs(x, y + 44, label, 0xFFFFFF, 0x1F8095);
+}
+
+static void DrawMouseCursor(u32 x, u32 y) {
+    static const char* rows[] = {
+        "X...........",
+        "XX..........",
+        "XOX.........",
+        "XOOX........",
+        "XOOOX.......",
+        "XOOOOX......",
+        "XOOOOOX.....",
+        "XOOOOOOX....",
+        "XOOOOOOOX...",
+        "XOOOOXXXX...",
+        "XOOXOX......",
+        "XOX..OX.....",
+        "XX...OX.....",
+        "X.....OX....",
+        "......OX....",
+        ".......X....",
+    };
+    for (u32 r = 0; r < 16; ++r) {
+        for (u32 c = 0; c < 12; ++c) {
+            char p = rows[r][c];
+            if (p == '.') continue;
+            FillRect(x + c * 2, y + r * 2, 2, 2, p == 'X' ? 0x000000 : 0xFFFFFF);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Draw one character at text cell (cx, cy) with given foreground/background
 // ---------------------------------------------------------------------------
 static void DrawChar(u32 cx, u32 cy, u8 ch, u32 fg, u32 bg) {
     if (!s_fb || cx >= s_cols || cy >= s_rows) return;
-    u32 px = cx * CHAR_W, py = cy * CHAR_H;
+    u32 px = s_origin_x + cx * CHAR_W, py = s_origin_y + cy * CHAR_H;
     const u8* g = &s_font[(u32)ch * 16];
     for (u32 r = 0; r < CHAR_H; ++r) {
         if (py + r >= s_fb_h) break;
@@ -393,8 +480,8 @@ static void EraseCursor() {
 static void DrawCursorShape() {
     if (!s_fb || s_row >= s_rows || s_col >= s_cols) return;
     // Underline cursor: last 2 pixel rows of the character cell
-    u32 px = s_col * CHAR_W;
-    u32 py = s_row * CHAR_H + CHAR_H - 2;
+    u32 px = s_origin_x + s_col * CHAR_W;
+    u32 py = s_origin_y + s_row * CHAR_H + CHAR_H - 2;
     u32 color = ToPixel(s_palette[7]);  // light gray
     for (u32 r = 0; r < 2 && (py + r) < s_fb_h; ++r) {
         u32* line = s_fb + (py + r) * s_fb_stride + px;
@@ -424,12 +511,128 @@ void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt) {
     s_fb_h      = h;
     s_fb_stride = stride;
     s_fb_bgr    = (fmt == 1);  // 1 = PixelBlueGreenRedReserved8BitPerColor
+    s_origin_x = 0;
+    s_origin_y = 0;
     s_cols = w / CHAR_W;  if (s_cols > 256) s_cols = 256;
     s_rows = h / CHAR_H;  if (s_rows > 64)  s_rows = 64;
 }
 
+static void ResetTextSurface(u32 x, u32 y, u32 w, u32 h) {
+    s_origin_x = x;
+    s_origin_y = y;
+    s_cols = w / CHAR_W; if (s_cols > 256) s_cols = 256;
+    s_rows = h / CHAR_H; if (s_rows > 64)  s_rows = 64;
+    if (s_cols < 20) s_cols = 20;
+    if (s_rows < 8)  s_rows = 8;
+
+    for (u32 r = 0; r < s_rows; ++r)
+        for (u32 c = 0; c < s_cols; ++c)
+            s_cells[r][c] = { ' ', 0x07 };
+    s_row = 1;
+    s_col = 0;
+    s_cursor_visible = false;
+}
+
+void StartDesktop() {
+    if (!s_fb) return;
+
+    // Luna-inspired desktop: sky, green hill, glossy XP taskbar, and a command
+    // window that hosts the existing MicroNT shell.
+    FillVerticalGradient(0, 0, s_fb_w, s_fb_h, 0x5DB9FF, 0x9BD6FF);
+
+    u32 horizon = (s_fb_h * 58) / 100;
+    FillVerticalGradient(0, horizon, s_fb_w, s_fb_h - horizon, 0x75C943, 0x2A8C26);
+    u32 hill_h = s_fb_h / 6;
+    for (u32 y = 0; y < hill_h; ++y) {
+        u32 left = (y * s_fb_w) / (hill_h * 5);
+        u32 right = s_fb_w > left ? s_fb_w - left : 0;
+        FillRect(left, horizon - hill_h / 2 + y, right - left, 1, 0x5EB333);
+    }
+    FillRect(s_fb_w / 12, s_fb_h / 9, 64, 64, 0xFFF3A3);
+
+    u32 task_h = s_fb_h >= 720 ? 40 : (s_fb_h >= 480 ? 34 : 28);
+    u32 task_y = s_fb_h > task_h ? s_fb_h - task_h : 0;
+    FillVerticalGradient(0, task_y, s_fb_w, task_h, 0x2D7FF0, 0x0E3FA5);
+    FillRect(0, task_y, s_fb_w, 1, 0x7DB7FF);
+
+    u32 start_w = s_fb_w >= 1280 ? 132 : (s_fb_w >= 640 ? 104 : 80);
+    FillVerticalGradient(0, task_y + 2, start_w, task_h - 4, 0x7FD34E, 0x258B1F);
+    RectOutline(0, task_y + 2, start_w, task_h - 4, 0xC6F4A5, 0x0A5A0A);
+    DrawTextAbs(18, task_y + 12, "start", 0xFFFFFF, 0x4CAF33);
+
+    u32 quick_x = start_w + 12;
+    FillRect(quick_x, task_y + 8, 24, 24, 0xF6C34F);
+    RectOutline(quick_x, task_y + 8, 24, 24, 0xFFF6BE, 0x9C7311);
+    FillRect(quick_x + 34, task_y + 8, 24, 24, 0x70B9FF);
+    RectOutline(quick_x + 34, task_y + 8, 24, 24, 0xD4F0FF, 0x1F5CA5);
+    FillVerticalGradient(quick_x + 72, task_y + 5, 236, task_h - 10, 0x4B8DFF, 0x1D55C8);
+    RectOutline(quick_x + 72, task_y + 5, 236, task_h - 10, 0x9BC3FF, 0x0B2D8F);
+    DrawTextAbs(quick_x + 84, task_y + 12, "MicroNT Command Prompt", 0xFFFFFF, 0x3475E8);
+
+    u32 tray_w = s_fb_w >= 640 ? 138 : 96;
+    u32 tray_x = s_fb_w > tray_w ? s_fb_w - tray_w : 0;
+    FillVerticalGradient(tray_x, task_y + 2, tray_w, task_h - 4, 0x2AA7E8, 0x1265C8);
+    RectOutline(tray_x, task_y + 2, tray_w, task_h - 4, 0x6DCFFF, 0x0B3E91);
+    DrawTextAbs(tray_x + 14, task_y + 12, "MicroNT", 0xFFFFFF, 0x1E88D8);
+
+    u32 icon_x = 28, icon_y = 28;
+    DrawDesktopIcon(icon_x, icon_y, "My PC", 0xDCEBFF, 0x8FBEFF);
+    DrawDesktopIcon(icon_x, icon_y + 92, "Files", 0xFFD66B, 0xF4D35E);
+    DrawDesktopIcon(icon_x, icon_y + 184, "Shell", 0xE9EEF8, 0x9FB2D0);
+    DrawDesktopIcon(icon_x, icon_y + 276, "VHD", 0xBCE7B3, 0x5DAF54);
+
+    u32 win_x = s_fb_w >= 1280 ? 210 : (s_fb_w >= 900 ? 132 : 92);
+    u32 win_y = s_fb_h >= 900 ? 126 : (s_fb_h >= 700 ? 82 : 54);
+    u32 win_w = s_fb_w > win_x + 96 ? s_fb_w - win_x - 96 : s_fb_w - 12;
+    u32 win_h = s_fb_h > win_y + task_h + 62 ? s_fb_h - win_y - task_h - 46 : s_fb_h - task_h - 12;
+    if (win_w > 1280) win_w = 1280;
+    if (win_h > 720) win_h = 720;
+
+    FillRect(win_x + 5, win_y + 6, win_w, win_h, 0x24508A);
+    FillRect(win_x, win_y, win_w, win_h, 0xECE9D8);
+    RectOutline(win_x, win_y, win_w, win_h, 0xFFFFFF, 0x315BA3);
+
+    FillVerticalGradient(win_x + 3, win_y + 3, win_w - 6, 28, 0x2F7DFF, 0x0A3BB7);
+    DrawTextAbs(win_x + 12, win_y + 9, "MicroNT Command Prompt", 0xFFFFFF, 0x1C5DE4);
+    u32 bx = win_x + win_w - 76;
+    for (u32 i = 0; i < 3; ++i) {
+        FillVerticalGradient(bx + i * 23, win_y + 7, 19, 18, 0x75A7FF, 0x1E55CF);
+        RectOutline(bx + i * 23, win_y + 7, 19, 18, 0xC7DEFF, 0x0D2D89);
+    }
+    DrawTextAbs(bx + 6,  win_y + 8, "_", 0xFFFFFF, 0x4D83EF);
+    DrawTextAbs(bx + 29, win_y + 8, "o", 0xFFFFFF, 0x4D83EF);
+    DrawTextAbs(bx + 52, win_y + 8, "x", 0xFFFFFF, 0x4D83EF);
+
+    u32 client_x = win_x + 8;
+    u32 client_y = win_y + 36;
+    u32 client_w = win_w > 16 ? win_w - 16 : win_w;
+    u32 client_h = win_h > 72 ? win_h - 72 : win_h;
+    FillRect(client_x, client_y, client_w, client_h, 0x000000);
+    RectOutline(client_x - 1, client_y - 1, client_w + 2, client_h + 2, 0x7F9DB9, 0xFFFFFF);
+    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, 0xECE9D8);
+    RectOutline(win_x + 8, win_y + win_h - 28, win_w - 16, 20, 0xFFFFFF, 0xACA899);
+
+    ResetTextSurface(client_x, client_y, client_w, client_h);
+
+    const char hdr[] = "*** MicroNT Shell - Windows XP style ***";
+    u32 hlen = sizeof(hdr) - 1;
+    u32 hstart = (s_cols > hlen) ? (s_cols - hlen) / 2 : 0;
+    for (u32 c = 0; c < s_cols; ++c) s_cells[0][c] = { ' ', 0x1F };
+    for (u32 i = 0; i < hlen && hstart + i < s_cols; ++i)
+        s_cells[0][hstart + i] = { (u8)hdr[i], 0x1F };
+    RedrawAll();
+    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   1920 x 1080 desktop target", 0x000000, 0xECE9D8);
+    DrawMouseCursor(s_fb_w > 240 ? s_fb_w - 220 : win_x + win_w - 82,
+                    horizon > 140 ? horizon - 120 : win_y + 74);
+}
+
 void Init() {
     if (!s_fb) return;
+    s_origin_x = 0;
+    s_origin_y = 0;
+    s_cols = s_fb_w / CHAR_W;  if (s_cols > 256) s_cols = 256;
+    s_rows = s_fb_h / CHAR_H;  if (s_rows > 64)  s_rows = 64;
+    s_cursor_visible = false;
     // Erase the entire GPU framebuffer to solid black first,
     // so no OVMF splash/watermark bleeds through below the text area.
     u32 black = ToPixel(0x000000);
@@ -698,13 +901,6 @@ static void RedrawRow(u32 r) {
         Cell& cell = s_cells[r][c];
         DrawChar(c, r, cell.ch, AttrFg(cell.attr), AttrBg(cell.attr));
     }
-}
-
-// Write a string into the cell buffer at (row, col) with attr, return end col.
-static u32 CellStr(u32 row, u32 col, const char* s, u8 attr) {
-    for (; *s && col < s_cols; ++s, ++col)
-        s_cells[row][col] = { (u8)*s, attr };
-    return col;
 }
 
 // Decimal format helpers (no libc).
