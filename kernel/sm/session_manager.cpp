@@ -4,12 +4,14 @@
 #include "../include/debug.h"
 #include "../include/process.h"
 #include "../include/userinit.h"
+#include "../include/winlogon.h"
 #include "../include/win32k.h"
 
 namespace SM {
 
 static InteractiveSession s_interactive{};
 static WIN32K::SessionGraphics s_graphics{};
+static WINLOGON::LogonSession s_logon{};
 static u32 s_next_session_id = 1;
 
 static bool SmssCreateSession(InteractiveSession& session) {
@@ -21,8 +23,9 @@ static bool SmssCreateSession(InteractiveSession& session) {
 }
 
 static bool WinlogonStart(InteractiveSession& session) {
-    Debug::Printf("[WINLOGON] Session %u secure logon ready\r\n", session.SessionId);
-    return true;
+    return WINLOGON::CreateLogonSession(s_logon, session.SessionId) &&
+           WINLOGON::AcceptAutoLogon(s_logon) &&
+           WINLOGON::AllowUserinit(s_logon);
 }
 
 static bool UserinitStart(InteractiveSession& session) {
@@ -42,6 +45,7 @@ static KThread* ExplorerStart(InteractiveSession& session,
 void Init() {
     s_interactive = {};
     s_graphics = {};
+    s_logon = {};
     s_next_session_id = 1;
     Debug::Print("[SMSS] Session manager initialized\r\n");
 }

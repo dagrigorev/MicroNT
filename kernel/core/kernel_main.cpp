@@ -14,6 +14,7 @@
 #include "../include/io.h"
 #include "../include/session.h"
 #include "../include/userinit.h"
+#include "../include/winlogon.h"
 #include "../include/win32k.h"
 #include "../ldr/hello2_pe.h"
 #include "../ldr/hello_pe.h"
@@ -244,6 +245,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     Debug::Print("[MicroNT] PE loader initialized\r\n");
 
     WIN32K::Init();
+    WINLOGON::Init();
     USERINIT::Init();
     SM::Init();
 
