@@ -4,6 +4,7 @@
 #include "../include/csrss.h"
 #include "../include/debug.h"
 #include "../include/dwm.h"
+#include "../include/explorer.h"
 #include "../include/process.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -15,6 +16,7 @@ static InteractiveSession s_interactive{};
 static CSRSS::Win32Session s_win32{};
 static WIN32K::SessionGraphics s_graphics{};
 static DWM::Compositor s_compositor{};
+static EXPLORER::Shell s_shell{};
 static WINLOGON::LogonSession s_logon{};
 static u32 s_next_session_id = 1;
 
@@ -41,14 +43,15 @@ static bool UserinitStart(InteractiveSession& session) {
     return USERINIT::PrepareInteractiveUser(session.SessionId);
 }
 
-static KThread* ExplorerStart(InteractiveSession& session,
-                              const ShellImageConfig& cfg) {
+static bool ExplorerStart(InteractiveSession& session,
+                          const ShellImageConfig& cfg) {
     Debug::Printf("[EXPLORER] Session %u shell bootstrap\r\n", session.SessionId);
     USERINIT::ShellLaunchResult shell =
         USERINIT::LaunchShell(session.SessionId, cfg);
     session.ShellProcess = shell.Process;
     session.ShellThread = shell.Thread;
-    return shell.Thread;
+    return EXPLORER::RegisterShell(s_shell, session.SessionId,
+                                   shell.Process, shell.Thread);
 }
 
 void Init() {
@@ -56,6 +59,7 @@ void Init() {
     s_win32 = {};
     s_graphics = {};
     s_compositor = {};
+    s_shell = {};
     s_logon = {};
     s_next_session_id = 1;
     Debug::Print("[SMSS] Session manager initialized\r\n");
@@ -70,12 +74,11 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(UserinitStart(session));
     KASSERT(DWM::Start(s_compositor, s_graphics));
 
-    KThread* shell = ExplorerStart(session, cfg);
+    KASSERT(ExplorerStart(session, cfg));
 
     DWM::PresentShellDesktop(s_compositor);
 
-    Sched::AddThread(shell);
-    Debug::Printf("[EXPLORER] Session %u shell started\r\n", session.SessionId);
+    KASSERT(EXPLORER::StartShellThread(s_shell));
     return &session;
 }
 

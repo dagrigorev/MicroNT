@@ -14,6 +14,7 @@
 #include "../include/io.h"
 #include "../include/csrss.h"
 #include "../include/dwm.h"
+#include "../include/explorer.h"
 #include "../include/session.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -251,6 +252,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     DWM::Init();
     WINLOGON::Init();
     USERINIT::Init();
+    EXPLORER::Init();
     SM::Init();
 
     // ----------------------------------------------------------

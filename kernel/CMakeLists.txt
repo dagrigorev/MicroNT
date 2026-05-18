@@ -66,6 +66,7 @@ set(KERNEL_SOURCES
 
     # Session manager / interactive shell bootstrap
     sm/csrss.cpp
+    sm/explorer.cpp
     sm/session_manager.cpp
     sm/userinit.cpp
     sm/winlogon.cpp
