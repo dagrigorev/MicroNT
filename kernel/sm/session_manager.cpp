@@ -1,6 +1,7 @@
 // session_manager.cpp -- MicroNT interactive session bootstrap.
 
 #include "../include/session.h"
+#include "../include/csrss.h"
 #include "../include/debug.h"
 #include "../include/process.h"
 #include "../include/userinit.h"
@@ -10,6 +11,7 @@
 namespace SM {
 
 static InteractiveSession s_interactive{};
+static CSRSS::Win32Session s_win32{};
 static WIN32K::SessionGraphics s_graphics{};
 static WINLOGON::LogonSession s_logon{};
 static u32 s_next_session_id = 1;
@@ -20,6 +22,11 @@ static bool SmssCreateSession(InteractiveSession& session) {
     session.ShellThread = nullptr;
     Debug::Printf("[SMSS] Session %u created\r\n", session.SessionId);
     return true;
+}
+
+static bool CsrssStart(InteractiveSession& session) {
+    return CSRSS::CreateWin32Session(s_win32, session.SessionId) &&
+           CSRSS::StartConsoleRuntime(s_win32);
 }
 
 static bool WinlogonStart(InteractiveSession& session) {
@@ -44,6 +51,7 @@ static KThread* ExplorerStart(InteractiveSession& session,
 
 void Init() {
     s_interactive = {};
+    s_win32 = {};
     s_graphics = {};
     s_logon = {};
     s_next_session_id = 1;
@@ -53,7 +61,8 @@ void Init() {
 InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     InteractiveSession& session = s_interactive;
     KASSERT(SmssCreateSession(session));
-    KASSERT(WIN32K::StartCsrss(s_graphics, session.SessionId));
+    KASSERT(CsrssStart(session));
+    KASSERT(WIN32K::AttachSession(s_graphics, s_win32));
     KASSERT(WinlogonStart(session));
     KASSERT(UserinitStart(session));
     KASSERT(WIN32K::StartDwm(s_graphics));

@@ -6,17 +6,18 @@
 // session bootstrap no longer paints the framebuffer directly.
 
 #include "ntdef.h"
+#include "csrss.h"
 
 namespace WIN32K {
 
 struct SessionGraphics {
     u32  SessionId;
-    bool CsrssReady;
+    bool Win32Attached;
     bool DwmReady;
 };
 
 void Init();
-bool StartCsrss(SessionGraphics& graphics, u32 session_id);
+bool AttachSession(SessionGraphics& graphics, const CSRSS::Win32Session& session);
 bool StartDwm(SessionGraphics& graphics);
 void PresentShellDesktop(SessionGraphics& graphics);
 

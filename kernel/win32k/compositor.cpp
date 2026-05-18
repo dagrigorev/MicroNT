@@ -13,17 +13,18 @@ void Init() {
     Debug::Print("[WIN32K] Graphics subsystem initialized\r\n");
 }
 
-bool StartCsrss(SessionGraphics& graphics, u32 session_id) {
-    if (!s_initialized) return false;
-    graphics.SessionId = session_id;
-    graphics.CsrssReady = true;
+bool AttachSession(SessionGraphics& graphics, const CSRSS::Win32Session& session) {
+    if (!s_initialized || !session.RuntimeReady) return false;
+    graphics.SessionId = session.SessionId;
+    graphics.Win32Attached = true;
     graphics.DwmReady = false;
-    Debug::Printf("[CSRSS] Session %u Win32 subsystem ready\r\n", session_id);
+    Debug::Printf("[WIN32K] Session %u attached to Win32 runtime\r\n",
+                  session.SessionId);
     return true;
 }
 
 bool StartDwm(SessionGraphics& graphics) {
-    if (!graphics.CsrssReady) return false;
+    if (!graphics.Win32Attached) return false;
     graphics.DwmReady = true;
     Debug::Printf("[DWM] Session %u compositor started\r\n", graphics.SessionId);
     return true;
