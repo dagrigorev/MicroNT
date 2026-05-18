@@ -2,11 +2,11 @@
 
 #include "../include/session.h"
 #include "../include/debug.h"
-#include "../include/hal.h"
 #include "../include/memory.h"
 #include "../include/ntstatus.h"
 #include "../include/pe.h"
 #include "../include/process.h"
+#include "../include/win32k.h"
 
 namespace SYSCALL {
 void SetCommands(const char** cmds, u32 count);
@@ -15,6 +15,7 @@ void SetCommands(const char** cmds, u32 count);
 namespace SM {
 
 static InteractiveSession s_interactive{};
+static WIN32K::SessionGraphics s_graphics{};
 static u32 s_next_session_id = 1;
 
 static bool SmssCreateSession(InteractiveSession& session) {
@@ -82,6 +83,7 @@ static KThread* ExplorerStart(InteractiveSession& session,
 
 void Init() {
     s_interactive = {};
+    s_graphics = {};
     s_next_session_id = 1;
     Debug::Print("[SMSS] Session manager initialized\r\n");
 }
@@ -89,16 +91,14 @@ void Init() {
 InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     InteractiveSession& session = s_interactive;
     KASSERT(SmssCreateSession(session));
+    KASSERT(WIN32K::StartCsrss(s_graphics, session.SessionId));
     KASSERT(WinlogonStart(session));
     KASSERT(UserinitStart(session));
+    KASSERT(WIN32K::StartDwm(s_graphics));
 
     KThread* shell = ExplorerStart(session, cfg);
 
-    // The real Windows shell owns desktop composition in user mode. For now
-    // MicroNT paints the desktop in kernel framebuffer code, then lets the
-    // shell process provide command interaction inside that surface.
-    VGA::StartDesktop();
-    VGA::WriteWelcome();
+    WIN32K::PresentShellDesktop(s_graphics);
 
     Sched::AddThread(shell);
     Debug::Printf("[EXPLORER] Session %u shell started\r\n", session.SessionId);

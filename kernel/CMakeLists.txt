@@ -67,6 +67,9 @@ set(KERNEL_SOURCES
     # Session manager / interactive shell bootstrap
     sm/session_manager.cpp
 
+    # Win32 graphical subsystem boundary
+    win32k/compositor.cpp
+
     # I/O
     io/console.cpp
     io/vfs.cpp
