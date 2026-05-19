@@ -87,6 +87,7 @@ set(KERNEL_SOURCES
     win32k/shellinput.cpp
     win32k/shellnotify.cpp
     win32k/shellstart.cpp
+    win32k/shelltaskbar.cpp
     win32k/shelltray.cpp
     win32k/uxtheme.cpp
     win32k/windowmgr.cpp

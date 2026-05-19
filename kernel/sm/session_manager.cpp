@@ -19,6 +19,7 @@
 #include "../include/shellinput.h"
 #include "../include/shellnotify.h"
 #include "../include/shellstart.h"
+#include "../include/shelltaskbar.h"
 #include "../include/shelltray.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
@@ -52,6 +53,7 @@ static SHELLA11Y::AccessibilityState s_accessibility_state{};
 static SHELLTRAY::TrayState s_tray_state{};
 static SHELLNOTIFY::NotificationQueue s_notification_queue{};
 static SHELLSTART::StartMenuState s_start_menu{};
+static SHELLTASKBAR::TaskbarState s_taskbar_state{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
 static APPMODEL::AppIdentity s_shell_app{};
@@ -167,6 +169,12 @@ static bool ShellStartMenuStart(InteractiveSession& session) {
            SHELLSTART::PublishStartMenu(s_start_menu);
 }
 
+static bool ShellTaskbarStart(InteractiveSession& session) {
+    return SHELLTASKBAR::BuildTaskbar(s_taskbar_state, s_desktop_layout,
+                                      s_activation_state) &&
+           SHELLTASKBAR::PublishTaskbar(s_taskbar_state);
+}
+
 static bool ShellNotificationsStart(InteractiveSession& session) {
     return SHELLNOTIFY::CreateNotificationQueue(s_notification_queue,
                                                 s_tray_state) &&
@@ -204,6 +212,7 @@ void Init() {
     s_tray_state = {};
     s_notification_queue = {};
     s_start_menu = {};
+    s_taskbar_state = {};
     s_logon = {};
     s_profile = {};
     s_shell_app = {};
@@ -243,6 +252,7 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(ShellActivationStart(session));
     KASSERT(ShellAccessibilityStart(session));
     KASSERT(ShellStartMenuStart(session));
+    KASSERT(ShellTaskbarStart(session));
     KASSERT(ShellTrayStart(session));
     KASSERT(ShellNotificationsStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));
