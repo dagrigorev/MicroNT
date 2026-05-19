@@ -17,6 +17,7 @@
 #include "../include/shellact.h"
 #include "../include/shella11y.h"
 #include "../include/shellinput.h"
+#include "../include/shelltray.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -46,6 +47,7 @@ static UXTHEME::Theme s_theme{};
 static SHELLINPUT::PointerState s_pointer_state{};
 static SHELLACT::ActivationState s_activation_state{};
 static SHELLA11Y::AccessibilityState s_accessibility_state{};
+static SHELLTRAY::TrayState s_tray_state{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
 static APPMODEL::AppIdentity s_shell_app{};
@@ -150,6 +152,11 @@ static bool ShellAccessibilityStart(InteractiveSession& session) {
                                        s_activation_state);
 }
 
+static bool ShellTrayStart(InteractiveSession& session) {
+    return SHELLTRAY::CreateTrayState(s_tray_state, s_activation_state) &&
+           SHELLTRAY::PublishTrayState(s_tray_state);
+}
+
 static bool DisplayConfigStart(InteractiveSession& session) {
     return DISPLAYCFG::QueryPrimaryMode(s_display_mode) &&
            DISPLAYCFG::AttachSessionTarget(s_display_target, session.SessionId,
@@ -178,6 +185,7 @@ void Init() {
     s_pointer_state = {};
     s_activation_state = {};
     s_accessibility_state = {};
+    s_tray_state = {};
     s_logon = {};
     s_profile = {};
     s_shell_app = {};
@@ -216,6 +224,7 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(ShellInputStart(session));
     KASSERT(ShellActivationStart(session));
     KASSERT(ShellAccessibilityStart(session));
+    KASSERT(ShellTrayStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));
     return &session;
 }

@@ -27,6 +27,7 @@
 #include "../include/shellact.h"
 #include "../include/shella11y.h"
 #include "../include/shellinput.h"
+#include "../include/shelltray.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -281,6 +282,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     SHELLINPUT::Init();
     SHELLACT::Init();
     SHELLA11Y::Init();
+    SHELLTRAY::Init();
     SERVICES::Init();
     SM::Init();
 
