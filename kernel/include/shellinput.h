@@ -29,6 +29,7 @@ void Init();
 bool AttachLayout(PointerState& pointer,
                   const INPUTHOST::InputDesktop& input,
                   const DESKTOPMODEL::DesktopLayout& layout);
-bool PrimeDefaultHitTarget(PointerState& pointer);
+bool PrimeDefaultHitTarget(PointerState& pointer,
+                           const DESKTOPMODEL::DesktopLayout& layout);
 
 } // namespace SHELLINPUT

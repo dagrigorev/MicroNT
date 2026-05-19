@@ -18,6 +18,7 @@
 #include "../include/shella11y.h"
 #include "../include/shellinput.h"
 #include "../include/shellnotify.h"
+#include "../include/shellstart.h"
 #include "../include/shelltray.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
@@ -50,6 +51,7 @@ static SHELLACT::ActivationState s_activation_state{};
 static SHELLA11Y::AccessibilityState s_accessibility_state{};
 static SHELLTRAY::TrayState s_tray_state{};
 static SHELLNOTIFY::NotificationQueue s_notification_queue{};
+static SHELLSTART::StartMenuState s_start_menu{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
 static APPMODEL::AppIdentity s_shell_app{};
@@ -137,7 +139,7 @@ static bool InputHostStart(InteractiveSession& session) {
 static bool ShellInputStart(InteractiveSession& session) {
     return SHELLINPUT::AttachLayout(s_pointer_state, s_input_desktop,
                                     s_desktop_layout) &&
-           SHELLINPUT::PrimeDefaultHitTarget(s_pointer_state);
+           SHELLINPUT::PrimeDefaultHitTarget(s_pointer_state, s_desktop_layout);
 }
 
 static bool ShellActivationStart(InteractiveSession& session) {
@@ -157,6 +159,12 @@ static bool ShellAccessibilityStart(InteractiveSession& session) {
 static bool ShellTrayStart(InteractiveSession& session) {
     return SHELLTRAY::CreateTrayState(s_tray_state, s_activation_state) &&
            SHELLTRAY::PublishTrayState(s_tray_state);
+}
+
+static bool ShellStartMenuStart(InteractiveSession& session) {
+    return SHELLSTART::BuildStartMenu(s_start_menu, s_desktop_layout,
+                                      s_activation_state) &&
+           SHELLSTART::PublishStartMenu(s_start_menu);
 }
 
 static bool ShellNotificationsStart(InteractiveSession& session) {
@@ -195,6 +203,7 @@ void Init() {
     s_accessibility_state = {};
     s_tray_state = {};
     s_notification_queue = {};
+    s_start_menu = {};
     s_logon = {};
     s_profile = {};
     s_shell_app = {};
@@ -233,6 +242,7 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(ShellInputStart(session));
     KASSERT(ShellActivationStart(session));
     KASSERT(ShellAccessibilityStart(session));
+    KASSERT(ShellStartMenuStart(session));
     KASSERT(ShellTrayStart(session));
     KASSERT(ShellNotificationsStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));

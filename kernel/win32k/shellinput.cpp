@@ -41,10 +41,12 @@ bool AttachLayout(PointerState& pointer,
     return true;
 }
 
-bool PrimeDefaultHitTarget(PointerState& pointer) {
+bool PrimeDefaultHitTarget(PointerState& pointer,
+                           const DESKTOPMODEL::DesktopLayout& layout) {
     if (!pointer.HitTestingReady) return false;
 
-    pointer.HotTarget = HitTargetKind::ShellWindow;
+    pointer.HotTarget = layout.StartMenuOpen ? HitTargetKind::StartMenu
+                                             : HitTargetKind::ShellWindow;
     pointer.TargetIndex = 0;
     Debug::Printf("[SHELLINPUT] Session %u default target=%s[%u]\r\n",
                   pointer.SessionId, HitName(pointer.HotTarget),
