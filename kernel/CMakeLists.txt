@@ -70,6 +70,7 @@ set(KERNEL_SOURCES
     sm/profile.cpp
     sm/registry.cpp
     sm/services.cpp
+    sm/shellhost.cpp
     sm/session_manager.cpp
     sm/userinit.cpp
     sm/winlogon.cpp

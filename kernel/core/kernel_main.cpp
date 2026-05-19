@@ -19,6 +19,7 @@
 #include "../include/explorer.h"
 #include "../include/services.h"
 #include "../include/session.h"
+#include "../include/shellhost.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
 #include "../include/winsta.h"
@@ -261,6 +262,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     PROFILE::Init();
     USERINIT::Init();
     EXPLORER::Init();
+    SHELLHOST::Init();
     SERVICES::Init();
     SM::Init();
 
