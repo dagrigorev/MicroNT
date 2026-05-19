@@ -14,6 +14,7 @@
 #include "../include/registry.h"
 #include "../include/services.h"
 #include "../include/shellhost.h"
+#include "../include/shellact.h"
 #include "../include/shellinput.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
@@ -42,6 +43,7 @@ static DISPLAYCFG::DisplayMode s_display_mode{};
 static DISPLAYCFG::DisplayTarget s_display_target{};
 static UXTHEME::Theme s_theme{};
 static SHELLINPUT::PointerState s_pointer_state{};
+static SHELLACT::ActivationState s_activation_state{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
 static APPMODEL::AppIdentity s_shell_app{};
@@ -132,6 +134,13 @@ static bool ShellInputStart(InteractiveSession& session) {
            SHELLINPUT::PrimeDefaultHitTarget(s_pointer_state);
 }
 
+static bool ShellActivationStart(InteractiveSession& session) {
+    return SHELLACT::CreateActivationState(s_activation_state, s_desktop_layout) &&
+           SHELLACT::ApplyPointerTarget(s_activation_state, s_pointer_state,
+                                        s_desktop_layout) &&
+           SHELLACT::PublishTaskbarState(s_activation_state, s_desktop_layout);
+}
+
 static bool DisplayConfigStart(InteractiveSession& session) {
     return DISPLAYCFG::QueryPrimaryMode(s_display_mode) &&
            DISPLAYCFG::AttachSessionTarget(s_display_target, session.SessionId,
@@ -158,6 +167,7 @@ void Init() {
     s_display_target = {};
     s_theme = {};
     s_pointer_state = {};
+    s_activation_state = {};
     s_logon = {};
     s_profile = {};
     s_shell_app = {};
@@ -194,6 +204,7 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
 
     KASSERT(InputHostStart(session));
     KASSERT(ShellInputStart(session));
+    KASSERT(ShellActivationStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));
     return &session;
 }

@@ -24,6 +24,7 @@
 #include "../include/services.h"
 #include "../include/session.h"
 #include "../include/shellhost.h"
+#include "../include/shellact.h"
 #include "../include/shellinput.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
@@ -277,6 +278,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     SHELLHOST::Init();
     INPUTHOST::Init();
     SHELLINPUT::Init();
+    SHELLACT::Init();
     SERVICES::Init();
     SM::Init();
 

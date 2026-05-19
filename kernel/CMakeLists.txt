@@ -82,6 +82,7 @@ set(KERNEL_SOURCES
     win32k/desktopmodel.cpp
     win32k/displaycfg.cpp
     win32k/dwm.cpp
+    win32k/shellact.cpp
     win32k/shellinput.cpp
     win32k/uxtheme.cpp
     win32k/windowmgr.cpp
