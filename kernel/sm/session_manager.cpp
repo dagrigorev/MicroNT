@@ -13,6 +13,7 @@
 #include "../include/profile.h"
 #include "../include/registry.h"
 #include "../include/services.h"
+#include "../include/shellcommands.h"
 #include "../include/shellhost.h"
 #include "../include/shellact.h"
 #include "../include/shella11y.h"
@@ -51,6 +52,7 @@ static UXTHEME::Theme s_theme{};
 static SHELLINPUT::PointerState s_pointer_state{};
 static SHELLACT::ActivationState s_activation_state{};
 static SHELLA11Y::AccessibilityState s_accessibility_state{};
+static SHELLCOMMANDS::CommandState s_command_state{};
 static SHELLTRAY::TrayState s_tray_state{};
 static SHELLNOTIFY::NotificationQueue s_notification_queue{};
 static SHELLSTART::StartMenuState s_start_menu{};
@@ -182,6 +184,11 @@ static bool ShellPowerStart(InteractiveSession& session) {
            SHELLPOWER::PublishPowerState(s_power_state);
 }
 
+static bool ShellCommandsStart(InteractiveSession& session) {
+    return SHELLCOMMANDS::BuildCommandState(s_command_state, s_start_menu) &&
+           SHELLCOMMANDS::PublishCommandState(s_command_state);
+}
+
 static bool ShellNotificationsStart(InteractiveSession& session) {
     return SHELLNOTIFY::CreateNotificationQueue(s_notification_queue,
                                                 s_tray_state) &&
@@ -216,6 +223,7 @@ void Init() {
     s_pointer_state = {};
     s_activation_state = {};
     s_accessibility_state = {};
+    s_command_state = {};
     s_tray_state = {};
     s_notification_queue = {};
     s_start_menu = {};
@@ -261,6 +269,7 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(ShellAccessibilityStart(session));
     KASSERT(ShellStartMenuStart(session));
     KASSERT(ShellPowerStart(session));
+    KASSERT(ShellCommandsStart(session));
     KASSERT(ShellTaskbarStart(session));
     KASSERT(ShellTrayStart(session));
     KASSERT(ShellNotificationsStart(session));
