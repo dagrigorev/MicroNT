@@ -79,6 +79,7 @@ set(KERNEL_SOURCES
 
     # Win32 graphical subsystem boundary
     win32k/compositor.cpp
+    win32k/desktopmodel.cpp
     win32k/displaycfg.cpp
     win32k/dwm.cpp
     win32k/uxtheme.cpp

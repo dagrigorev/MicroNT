@@ -1,6 +1,7 @@
 #pragma once
 // hal.h - MicroNT Hardware Abstraction Layer interface
 
+#include "desktopmodel.h"
 #include "ntdef.h"
 #include "uxtheme.h"
 
@@ -145,7 +146,8 @@ namespace VGA {
     void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt);
     bool GetFramebufferInfo(FramebufferInfo& info);
     void Init();
-    void StartDesktop(const UXTHEME::Theme& theme); // themed shell over GOP framebuffer
+    void StartDesktop(const UXTHEME::Theme& theme,
+                      const DESKTOPMODEL::DesktopLayout& layout);
     void ClearScreen();        // fast clear rows 1+, keeps header bar
     void WriteWelcome();
     void Print(const char* s, u8 attr = 0x07);

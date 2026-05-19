@@ -634,7 +634,8 @@ static void ResetTextSurface(u32 x, u32 y, u32 w, u32 h) {
     s_cursor_visible = false;
 }
 
-void StartDesktop(const UXTHEME::Theme& theme) {
+void StartDesktop(const UXTHEME::Theme& theme,
+                  const DESKTOPMODEL::DesktopLayout& layout) {
     if (!s_fb) return;
 
     // Desktop shell mockup: XP-redesign wallpaper, icon rail, open Start menu,
@@ -662,27 +663,50 @@ void StartDesktop(const UXTHEME::Theme& theme) {
                          theme.TaskbarTop, theme.TaskbarBottom);
     FillRect(0, task_y, s_fb_w, 1, 0x7DB7FF);
 
-    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 28, "MicroNT", 0xFFFFFF, 0x159DFF);
-    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 48, "Simply Fast. Reliably Yours.", 0xFFFFFF, 0x159DFF);
+    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 28,
+                layout.BrandName ? layout.BrandName : "MicroNT",
+                0xFFFFFF, 0x159DFF);
+    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 48,
+                layout.BrandTag ? layout.BrandTag : "Simply Fast. Reliably Yours.",
+                0xFFFFFF, 0x159DFF);
 
     u32 icon_x = 18, icon_y = 14;
-    DrawDesktopIcon(icon_x, icon_y, "Computer", 0x439AFF, 0x12356B);
-    DrawFolderIcon(icon_x, icon_y + 82, "Documents");
-    DrawDesktopIcon(icon_x, icon_y + 164, "Network", 0x0C8BE8, 0x07418D);
-    DrawDesktopIcon(icon_x, icon_y + 246, "Media", 0xFF6D14, 0xFFBD4A);
-    DrawDesktopIcon(icon_x, icon_y + 328, "Control", 0x46A8FF, 0x1A55B7);
-    DrawDesktopIcon(icon_x, icon_y + 410, "Recycle", 0xADC4D7, 0x6E8297);
+    for (u32 i = 0; i < layout.IconCount; ++i) {
+        u32 y = icon_y + i * 82;
+        const DESKTOPMODEL::DesktopIcon& icon = layout.Icons[i];
+        switch (icon.Kind) {
+        case DESKTOPMODEL::IconKind::Folder:
+            DrawFolderIcon(icon_x, y, icon.Label);
+            break;
+        case DESKTOPMODEL::IconKind::Network:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0x0C8BE8, 0x07418D);
+            break;
+        case DESKTOPMODEL::IconKind::Media:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0xFF6D14, 0xFFBD4A);
+            break;
+        case DESKTOPMODEL::IconKind::Control:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0x46A8FF, 0x1A55B7);
+            break;
+        case DESKTOPMODEL::IconKind::Recycle:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0xADC4D7, 0x6E8297);
+            break;
+        case DESKTOPMODEL::IconKind::Computer:
+        default:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0x439AFF, 0x12356B);
+            break;
+        }
+    }
 
-    DrawPanelWindow(228, 38, 665, 430, "My Computer", true,
-                    "MICRONT-SYSTEM  WORKGROUP");
-    DrawPanelWindow(s_fb_w > 1660 ? 1015 : 900, 58, 620, 365, "Documents", true,
-                    "10 items");
-    DrawPanelWindow(645, 420, 575, 290, "Network", true,
-                    "Signal: excellent");
-    DrawPanelWindow(s_fb_w > 1840 ? 1238 : 1120, 420, 600, 360, "Control Panel", false,
-                    "MicroNT Control Center");
-    DrawPanelWindow(430, s_fb_h > 970 ? 708 : 610, 720, 260, "Media Player", true,
-                    "02:37 / 05:45");
+    for (u32 i = 0; i < layout.WindowCount; ++i) {
+        const DESKTOPMODEL::ShellWindow& win = layout.Windows[i];
+        u32 x = win.X;
+        u32 y = win.Y;
+        u32 w = win.Width;
+        u32 h = win.Height;
+        if (x + w >= s_fb_w) x = s_fb_w > w + 18 ? s_fb_w - w - 18 : 12;
+        if (y + h >= task_y) y = task_y > h + 18 ? task_y - h - 18 : 12;
+        DrawPanelWindow(x, y, w, h, win.Title, win.Toolbar, win.Status);
+    }
 
     u32 menu_w = s_fb_w >= 900 ? 345 : 300;
     u32 menu_h = s_fb_h >= 700 ? 420 : 330;
@@ -722,15 +746,20 @@ void StartDesktop(const UXTHEME::Theme& theme) {
     DrawTextAbs(56, task_y + 14, "Start", 0xFFFFFF, 0x2BA536);
 
     u32 tbx = 136;
-    const char* tasks[] = { "My Computer", "Documents", "Network", "Control Panel",
-                            "Media Player", "MicroNT Shell" };
-    for (u32 i = 0; i < 6 && tbx + 126 < s_fb_w; ++i) {
+    for (u32 i = 0; i < layout.WindowCount && tbx + 126 < s_fb_w; ++i) {
         FillVerticalGradient(tbx, task_y + 6, 125, task_h - 12,
-                             i == 5 ? 0x8BD1FF : 0x4EB2F7,
-                             i == 5 ? 0x2475D6 : 0x0D53AD);
+                             0x4EB2F7, 0x0D53AD);
         RectOutline(tbx, task_y + 6, 125, task_h - 12, 0x9BC3FF, 0x0B2D8F);
-        DrawTextAbs(tbx + 10, task_y + 15, tasks[i], 0xFFFFFF, i == 5 ? 0x5FA2EA : 0x2A79D0);
+        DrawTextAbs(tbx + 10, task_y + 15, layout.Windows[i].Title,
+                    0xFFFFFF, 0x2A79D0);
         tbx += 132;
+    }
+    if (tbx + 126 < s_fb_w) {
+        FillVerticalGradient(tbx, task_y + 6, 125, task_h - 12,
+                             0x8BD1FF, 0x2475D6);
+        RectOutline(tbx, task_y + 6, 125, task_h - 12, 0x9BC3FF, 0x0B2D8F);
+        DrawTextAbs(tbx + 10, task_y + 15, "MicroNT Shell",
+                    0xFFFFFF, 0x5FA2EA);
     }
 
     u32 tray_w = s_fb_w >= 640 ? 154 : 96;

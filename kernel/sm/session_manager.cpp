@@ -4,6 +4,7 @@
 #include "../include/appmodel.h"
 #include "../include/csrss.h"
 #include "../include/debug.h"
+#include "../include/desktopmodel.h"
 #include "../include/displaycfg.h"
 #include "../include/dwm.h"
 #include "../include/explorer.h"
@@ -35,6 +36,7 @@ static EXPLORER::Shell s_shell{};
 static SHELLHOST::ShellSurface s_shell_surface{};
 static INPUTHOST::InputDesktop s_input_desktop{};
 static WINDOWMGR::DesktopScene s_desktop_scene{};
+static DESKTOPMODEL::DesktopLayout s_desktop_layout{};
 static DISPLAYCFG::DisplayMode s_display_mode{};
 static DISPLAYCFG::DisplayTarget s_display_target{};
 static UXTHEME::Theme s_theme{};
@@ -112,6 +114,10 @@ static bool WindowManagerStart(InteractiveSession& session) {
            WINDOWMGR::SetForegroundWindow(s_desktop_scene, 2);
 }
 
+static bool DesktopModelStart(InteractiveSession& session) {
+    return DESKTOPMODEL::BuildXpRedesignLayout(s_desktop_layout, s_desktop_scene);
+}
+
 static bool InputHostStart(InteractiveSession& session) {
     return INPUTHOST::AttachDesktop(s_input_desktop, s_shell_desktop) &&
            INPUTHOST::FocusShellSurface(s_input_desktop, s_shell_surface) &&
@@ -139,6 +145,7 @@ void Init() {
     s_shell_surface = {};
     s_input_desktop = {};
     s_desktop_scene = {};
+    s_desktop_layout = {};
     s_display_mode = {};
     s_display_target = {};
     s_theme = {};
@@ -171,9 +178,10 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(UXTHEME::LoadDefaultTheme(s_theme));
     KASSERT(ShellHostStart(session));
     KASSERT(WindowManagerStart(session));
+    KASSERT(DesktopModelStart(session));
 
     DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene,
-                             s_display_target, s_theme);
+                             s_display_target, s_desktop_layout, s_theme);
 
     KASSERT(InputHostStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));
