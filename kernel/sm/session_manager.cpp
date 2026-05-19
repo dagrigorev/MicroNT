@@ -5,6 +5,7 @@
 #include "../include/debug.h"
 #include "../include/dwm.h"
 #include "../include/explorer.h"
+#include "../include/inputhost.h"
 #include "../include/process.h"
 #include "../include/profile.h"
 #include "../include/registry.h"
@@ -28,6 +29,7 @@ static WINSTA::Desktop s_shell_desktop{};
 static DWM::Compositor s_compositor{};
 static EXPLORER::Shell s_shell{};
 static SHELLHOST::ShellSurface s_shell_surface{};
+static INPUTHOST::InputDesktop s_input_desktop{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
 static u32 s_next_session_id = 1;
@@ -92,6 +94,12 @@ static bool ShellHostStart(InteractiveSession& session) {
            SHELLHOST::ComposeDesktop(s_shell_surface);
 }
 
+static bool InputHostStart(InteractiveSession& session) {
+    return INPUTHOST::AttachDesktop(s_input_desktop, s_shell_desktop) &&
+           INPUTHOST::FocusShellSurface(s_input_desktop, s_shell_surface) &&
+           INPUTHOST::ShowCursor(s_input_desktop);
+}
+
 void Init() {
     s_system = {};
     s_services = {};
@@ -104,6 +112,7 @@ void Init() {
     s_compositor = {};
     s_shell = {};
     s_shell_surface = {};
+    s_input_desktop = {};
     s_logon = {};
     s_profile = {};
     s_next_session_id = 1;
@@ -132,6 +141,7 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
 
     DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_shell_surface);
 
+    KASSERT(InputHostStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));
     return &session;
 }

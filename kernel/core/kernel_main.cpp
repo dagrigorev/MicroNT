@@ -17,6 +17,7 @@
 #include "../include/csrss.h"
 #include "../include/dwm.h"
 #include "../include/explorer.h"
+#include "../include/inputhost.h"
 #include "../include/services.h"
 #include "../include/session.h"
 #include "../include/shellhost.h"
@@ -263,6 +264,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     USERINIT::Init();
     EXPLORER::Init();
     SHELLHOST::Init();
+    INPUTHOST::Init();
     SERVICES::Init();
     SM::Init();
 
