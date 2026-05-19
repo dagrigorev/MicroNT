@@ -11,6 +11,7 @@
 #include "../include/registry.h"
 #include "../include/services.h"
 #include "../include/shellhost.h"
+#include "../include/uxtheme.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
 #include "../include/windowmgr.h"
@@ -32,6 +33,7 @@ static EXPLORER::Shell s_shell{};
 static SHELLHOST::ShellSurface s_shell_surface{};
 static INPUTHOST::InputDesktop s_input_desktop{};
 static WINDOWMGR::DesktopScene s_desktop_scene{};
+static UXTHEME::Theme s_theme{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
 static u32 s_next_session_id = 1;
@@ -122,6 +124,7 @@ void Init() {
     s_shell_surface = {};
     s_input_desktop = {};
     s_desktop_scene = {};
+    s_theme = {};
     s_logon = {};
     s_profile = {};
     s_next_session_id = 1;
@@ -146,10 +149,11 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(DWM::Start(s_compositor, s_graphics));
 
     KASSERT(ExplorerStart(session, cfg));
+    KASSERT(UXTHEME::LoadDefaultTheme(s_theme));
     KASSERT(ShellHostStart(session));
     KASSERT(WindowManagerStart(session));
 
-    DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene);
+    DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene, s_theme);
 
     KASSERT(InputHostStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));

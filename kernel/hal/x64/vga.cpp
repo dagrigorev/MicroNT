@@ -533,12 +533,13 @@ static void ResetTextSurface(u32 x, u32 y, u32 w, u32 h) {
     s_cursor_visible = false;
 }
 
-void StartDesktop() {
+void StartDesktop(const UXTHEME::Theme& theme) {
     if (!s_fb) return;
 
     // Luna-inspired desktop: sky, green hill, glossy XP taskbar, and a command
     // window that hosts the existing MicroNT shell.
-    FillVerticalGradient(0, 0, s_fb_w, s_fb_h, 0x5DB9FF, 0x9BD6FF);
+    FillVerticalGradient(0, 0, s_fb_w, s_fb_h,
+                         theme.WallpaperTop, theme.WallpaperBottom);
 
     u32 horizon = (s_fb_h * 58) / 100;
     FillVerticalGradient(0, horizon, s_fb_w, s_fb_h - horizon, 0x75C943, 0x2A8C26);
@@ -552,11 +553,13 @@ void StartDesktop() {
 
     u32 task_h = s_fb_h >= 720 ? 40 : (s_fb_h >= 480 ? 34 : 28);
     u32 task_y = s_fb_h > task_h ? s_fb_h - task_h : 0;
-    FillVerticalGradient(0, task_y, s_fb_w, task_h, 0x2D7FF0, 0x0E3FA5);
+    FillVerticalGradient(0, task_y, s_fb_w, task_h,
+                         theme.TaskbarTop, theme.TaskbarBottom);
     FillRect(0, task_y, s_fb_w, 1, 0x7DB7FF);
 
     u32 start_w = s_fb_w >= 1280 ? 132 : (s_fb_w >= 640 ? 104 : 80);
-    FillVerticalGradient(0, task_y + 2, start_w, task_h - 4, 0x7FD34E, 0x258B1F);
+    FillVerticalGradient(0, task_y + 2, start_w, task_h - 4,
+                         theme.StartTop, theme.StartBottom);
     RectOutline(0, task_y + 2, start_w, task_h - 4, 0xC6F4A5, 0x0A5A0A);
     DrawTextAbs(18, task_y + 12, "start", 0xFFFFFF, 0x4CAF33);
 
@@ -589,10 +592,11 @@ void StartDesktop() {
     if (win_h > 720) win_h = 720;
 
     FillRect(win_x + 5, win_y + 6, win_w, win_h, 0x24508A);
-    FillRect(win_x, win_y, win_w, win_h, 0xECE9D8);
+    FillRect(win_x, win_y, win_w, win_h, theme.WindowFrame);
     RectOutline(win_x, win_y, win_w, win_h, 0xFFFFFF, 0x315BA3);
 
-    FillVerticalGradient(win_x + 3, win_y + 3, win_w - 6, 28, 0x2F7DFF, 0x0A3BB7);
+    FillVerticalGradient(win_x + 3, win_y + 3, win_w - 6, 28,
+                         theme.WindowTitleTop, theme.WindowTitleBottom);
     DrawTextAbs(win_x + 12, win_y + 9, "MicroNT Command Prompt", 0xFFFFFF, 0x1C5DE4);
     u32 bx = win_x + win_w - 76;
     for (u32 i = 0; i < 3; ++i) {
@@ -609,7 +613,7 @@ void StartDesktop() {
     u32 client_h = win_h > 72 ? win_h - 72 : win_h;
     FillRect(client_x, client_y, client_w, client_h, 0x000000);
     RectOutline(client_x - 1, client_y - 1, client_w + 2, client_h + 2, 0x7F9DB9, 0xFFFFFF);
-    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, 0xECE9D8);
+    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, theme.WindowFrame);
     RectOutline(win_x + 8, win_y + win_h - 28, win_w - 16, 20, 0xFFFFFF, 0xACA899);
 
     ResetTextSurface(client_x, client_y, client_w, client_h);
@@ -621,7 +625,7 @@ void StartDesktop() {
     for (u32 i = 0; i < hlen && hstart + i < s_cols; ++i)
         s_cells[0][hstart + i] = { (u8)hdr[i], 0x1F };
     RedrawAll();
-    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   1920 x 1080 desktop target", 0x000000, 0xECE9D8);
+    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   1920 x 1080 desktop target", 0x000000, theme.WindowFrame);
     DrawMouseCursor(s_fb_w > 240 ? s_fb_w - 220 : win_x + win_w - 82,
                     horizon > 140 ? horizon - 120 : win_y + 74);
 }

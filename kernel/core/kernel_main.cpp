@@ -21,6 +21,7 @@
 #include "../include/services.h"
 #include "../include/session.h"
 #include "../include/shellhost.h"
+#include "../include/uxtheme.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
 #include "../include/windowmgr.h"
@@ -259,6 +260,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     CSRSS::Init();
     WIN32K::Init();
     WINDOWMGR::Init();
+    UXTHEME::Init();
     WINSTA::Init();
     DWM::Init();
     WINLOGON::Init();

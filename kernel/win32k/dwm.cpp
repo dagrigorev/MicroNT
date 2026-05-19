@@ -21,13 +21,14 @@ bool Start(Compositor& compositor, const WIN32K::SessionGraphics& graphics) {
 }
 
 void PresentShellDesktop(Compositor& compositor, WINSTA::Desktop& desktop,
-                         const WINDOWMGR::DesktopScene& scene) {
+                         const WINDOWMGR::DesktopScene& scene,
+                         const UXTHEME::Theme& theme) {
     if (!compositor.Running) return;
     if (!scene.ZOrderReady || scene.SessionId != compositor.SessionId) return;
     if (!WINSTA::SwitchDesktop(desktop)) return;
-    Debug::Printf("[DWM] Session %u composing %u top-level windows\r\n",
-                  compositor.SessionId, scene.WindowCount);
-    VGA::StartDesktop();
+    Debug::Printf("[DWM] Session %u composing %u top-level windows with theme '%s'\r\n",
+                  compositor.SessionId, scene.WindowCount, theme.Name);
+    VGA::StartDesktop(theme);
     VGA::WriteWelcome();
     compositor.DesktopPresented = true;
 }
