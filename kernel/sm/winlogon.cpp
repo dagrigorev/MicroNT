@@ -9,11 +9,12 @@ void Init() {
     Debug::Print("[WINLOGON] Winlogon subsystem initialized\r\n");
 }
 
-bool CreateLogonSession(LogonSession& logon, u32 session_id) {
-    logon.SessionId = session_id;
+bool CreateLogonSession(LogonSession& logon, WINSTA::Desktop& secure_desktop) {
+    if (!WINSTA::SwitchDesktop(secure_desktop)) return false;
+    logon.SessionId = secure_desktop.SessionId;
     logon.State = LogonState::WaitingForCredentials;
     Debug::Printf("[WINLOGON] Session %u secure logon desktop ready\r\n",
-                  session_id);
+                  secure_desktop.SessionId);
     return true;
 }
 

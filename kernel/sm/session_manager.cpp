@@ -9,6 +9,7 @@
 #include "../include/services.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
+#include "../include/winsta.h"
 #include "../include/win32k.h"
 
 namespace SM {
@@ -18,6 +19,9 @@ static SERVICES::ServiceControlPlane s_services{};
 static InteractiveSession s_interactive{};
 static CSRSS::Win32Session s_win32{};
 static WIN32K::SessionGraphics s_graphics{};
+static WINSTA::WindowStation s_winsta{};
+static WINSTA::Desktop s_secure_desktop{};
+static WINSTA::Desktop s_shell_desktop{};
 static DWM::Compositor s_compositor{};
 static EXPLORER::Shell s_shell{};
 static WINLOGON::LogonSession s_logon{};
@@ -47,7 +51,7 @@ static bool CsrssStart(InteractiveSession& session) {
 }
 
 static bool WinlogonStart(InteractiveSession& session) {
-    return WINLOGON::CreateLogonSession(s_logon, session.SessionId) &&
+    return WINLOGON::CreateLogonSession(s_logon, s_secure_desktop) &&
            WINLOGON::AcceptAutoLogon(s_logon) &&
            WINLOGON::AllowUserinit(s_logon);
 }
@@ -73,6 +77,9 @@ void Init() {
     s_interactive = {};
     s_win32 = {};
     s_graphics = {};
+    s_winsta = {};
+    s_secure_desktop = {};
+    s_shell_desktop = {};
     s_compositor = {};
     s_shell = {};
     s_logon = {};
@@ -86,13 +93,20 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(SmssCreateSession(session));
     KASSERT(CsrssStart(session));
     KASSERT(WIN32K::AttachSession(s_graphics, s_win32));
+    KASSERT(WINSTA::CreateInteractiveWindowStation(s_winsta, session.SessionId));
+    KASSERT(WINSTA::CreateDesktop(s_secure_desktop, s_winsta,
+                                  WINSTA::DesktopKind::SecureLogon,
+                                  "Winlogon"));
+    KASSERT(WINSTA::CreateDesktop(s_shell_desktop, s_winsta,
+                                  WINSTA::DesktopKind::Shell,
+                                  "Default"));
     KASSERT(WinlogonStart(session));
     KASSERT(UserinitStart(session));
     KASSERT(DWM::Start(s_compositor, s_graphics));
 
     KASSERT(ExplorerStart(session, cfg));
 
-    DWM::PresentShellDesktop(s_compositor);
+    DWM::PresentShellDesktop(s_compositor, s_shell_desktop);
 
     KASSERT(EXPLORER::StartShellThread(s_shell));
     return &session;

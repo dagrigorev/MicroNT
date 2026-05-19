@@ -20,8 +20,9 @@ bool Start(Compositor& compositor, const WIN32K::SessionGraphics& graphics) {
     return true;
 }
 
-void PresentShellDesktop(Compositor& compositor) {
+void PresentShellDesktop(Compositor& compositor, WINSTA::Desktop& desktop) {
     if (!compositor.Running) return;
+    if (!WINSTA::SwitchDesktop(desktop)) return;
     Debug::Printf("[DWM] Session %u presenting shell desktop\r\n",
                   compositor.SessionId);
     VGA::StartDesktop();

@@ -2,6 +2,7 @@
 // winlogon.h -- MicroNT interactive logon owner.
 
 #include "ntdef.h"
+#include "winsta.h"
 
 namespace WINLOGON {
 
@@ -18,7 +19,7 @@ struct LogonSession {
 };
 
 void Init();
-bool CreateLogonSession(LogonSession& logon, u32 session_id);
+bool CreateLogonSession(LogonSession& logon, WINSTA::Desktop& secure_desktop);
 bool AcceptAutoLogon(LogonSession& logon);
 bool AllowUserinit(LogonSession& logon);
 
