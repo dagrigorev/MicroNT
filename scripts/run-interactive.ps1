@@ -124,6 +124,7 @@ if ($listed -match [regex]::Escape("`"$VmName`"")) {
     Log 'Applying display settings (VBoxVGA + 1920x1080 GOP)...'
     & $vbox modifyvm $UUID --graphicscontroller VBoxVGA 2>&1 | Out-Null
     & $vbox modifyvm $UUID --vram 32                  2>&1 | Out-Null
+    & $vbox modifyvm $UUID --mouse ps2                 2>&1 | Out-Null
     & $vbox setextradata $UUID CustomVideoMode1 '1920x1080x32' 2>&1 | Out-Null
 
 } else {
@@ -143,6 +144,7 @@ if ($listed -match [regex]::Escape("`"$VmName`"")) {
     # VBoxVGA = legacy VGA card, exposes 0xB8000 text buffer to the guest
     # vmsvga / vmsvga2 do NOT support legacy VGA text mode
     VBox modifyvm  $UUID --graphicscontroller VBoxVGA                         | Out-Null
+    VBox modifyvm  $UUID --mouse ps2                                          | Out-Null
     VBox setextradata $UUID CustomVideoMode1 '1920x1080x32'                   | Out-Null
     VBox modifyvm  $UUID --audio-driver none                                  | Out-Null
     VBox modifyvm  $UUID --usb off                                            | Out-Null

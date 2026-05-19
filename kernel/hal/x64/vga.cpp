@@ -281,6 +281,11 @@ static u32 s_rows = 25;
 static u32 s_row  = 1;
 static u32 s_col  = 0;
 static bool s_cursor_visible = false;  // is cursor currently drawn?
+
+static bool s_mouse_visible = false;
+static u32  s_mouse_x = 0;
+static u32  s_mouse_y = 0;
+static u32  s_mouse_backing[24 * 32];
 static u32 s_origin_x = 0;             // pixel origin of the text surface
 static u32 s_origin_y = 0;
 
@@ -485,6 +490,33 @@ static void DrawMouseCursor(u32 x, u32 y) {
     }
 }
 
+static void RestoreMouseCursor() {
+    if (!s_fb || !s_mouse_visible) return;
+    for (u32 y = 0; y < 32; ++y) {
+        if (s_mouse_y + y >= s_fb_h) break;
+        for (u32 x = 0; x < 24; ++x) {
+            if (s_mouse_x + x >= s_fb_w) break;
+            s_fb[(s_mouse_y + y) * s_fb_stride + (s_mouse_x + x)] =
+                s_mouse_backing[y * 24 + x];
+        }
+    }
+    s_mouse_visible = false;
+}
+
+static void SaveMouseCursor(u32 x0, u32 y0) {
+    if (!s_fb) return;
+    for (u32 y = 0; y < 32; ++y) {
+        for (u32 x = 0; x < 24; ++x) {
+            if (x0 + x < s_fb_w && y0 + y < s_fb_h) {
+                s_mouse_backing[y * 24 + x] =
+                    s_fb[(y0 + y) * s_fb_stride + (x0 + x)];
+            } else {
+                s_mouse_backing[y * 24 + x] = 0;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Draw one character at text cell (cx, cy) with given foreground/background
 // ---------------------------------------------------------------------------
@@ -637,6 +669,7 @@ static void ResetTextSurface(u32 x, u32 y, u32 w, u32 h) {
 void StartDesktop(const UXTHEME::Theme& theme,
                   const DESKTOPMODEL::DesktopLayout& layout) {
     if (!s_fb) return;
+    s_mouse_visible = false;
 
     // Desktop shell mockup: XP-redesign wallpaper, icon rail, open Start menu,
     // taskbar, and several static shell windows around the live command window.
@@ -808,8 +841,24 @@ void StartDesktop(const UXTHEME::Theme& theme,
         s_cells[0][hstart + i] = { (u8)hdr[i], 0x1F };
     RedrawAll();
     DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   1920 x 1080 desktop target", 0x000000, theme.WindowFrame);
-    DrawMouseCursor(s_fb_w > 240 ? s_fb_w - 220 : win_x + win_w - 82,
+    MoveMouseCursor(s_fb_w > 240 ? s_fb_w - 220 : win_x + win_w - 82,
                     h1 > 140 ? h1 - 120 : win_y + 74);
+}
+
+void MoveMouseCursor(u32 x, u32 y) {
+    if (!s_fb) return;
+    RestoreMouseCursor();
+
+    u32 max_x = s_fb_w > 24 ? s_fb_w - 24 : 0;
+    u32 max_y = s_fb_h > 32 ? s_fb_h - 32 : 0;
+    if (x > max_x) x = max_x;
+    if (y > max_y) y = max_y;
+
+    s_mouse_x = x;
+    s_mouse_y = y;
+    SaveMouseCursor(s_mouse_x, s_mouse_y);
+    DrawMouseCursor(s_mouse_x, s_mouse_y);
+    s_mouse_visible = true;
 }
 
 void Init() {
@@ -819,6 +868,7 @@ void Init() {
     s_cols = s_fb_w / CHAR_W;  if (s_cols > 256) s_cols = 256;
     s_rows = s_fb_h / CHAR_H;  if (s_rows > 64)  s_rows = 64;
     s_cursor_visible = false;
+    s_mouse_visible = false;
     // Erase the entire GPU framebuffer to solid black first,
     // so no OVMF splash/watermark bleeds through below the text area.
     u32 black = ToPixel(0x000000);

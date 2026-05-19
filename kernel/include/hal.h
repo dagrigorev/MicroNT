@@ -156,6 +156,7 @@ namespace VGA {
     void UpdateCursor();       // show cursor at current position
     void BlinkCursor();        // toggle cursor blink (~every 50 PIT ticks)
     void UpdateStatusBar(u64 ticks); // update uptime + bottom hint bar (~every 100 ticks)
+    void MoveMouseCursor(u32 x, u32 y);
 }
 
 // ============================================================
@@ -164,5 +165,23 @@ namespace VGA {
 namespace KB {
     void Init();
     bool TryRead(char* out);   // non-blocking; returns false if buffer empty
+    void HandleIrq(u8 irq);
+}
+
+// ============================================================
+// Mouse - PS/2 auxiliary device
+// ============================================================
+namespace MOUSE {
+    struct Packet {
+        i32 DeltaX;
+        i32 DeltaY;
+        bool Left;
+        bool Right;
+        bool Middle;
+    };
+
+    void Init();
+    bool IsReady();
+    bool TryRead(Packet* out);
     void HandleIrq(u8 irq);
 }

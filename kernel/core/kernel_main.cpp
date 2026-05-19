@@ -126,6 +126,9 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     KB::Init();
     HAL::IrqRegister(1, KB::HandleIrq);  // PS/2 keyboard = IRQ1
     HAL::PicSetMask(1, false);
+    HAL::IrqRegister(12, MOUSE::HandleIrq);  // PS/2 mouse = IRQ12
+    MOUSE::Init();
+    HAL::PicSetMask(12, false);
 
     HAL::IdtInit();
     Debug::Print("[MicroNT] IDT initialized\r\n");
