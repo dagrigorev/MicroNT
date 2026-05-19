@@ -29,6 +29,7 @@
 #include "../include/shella11y.h"
 #include "../include/shellinput.h"
 #include "../include/shellnotify.h"
+#include "../include/shellplaces.h"
 #include "../include/shellpower.h"
 #include "../include/shellstart.h"
 #include "../include/shelltaskbar.h"
@@ -289,6 +290,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     SHELLACT::Init();
     SHELLA11Y::Init();
     SHELLSTART::Init();
+    SHELLPLACES::Init();
     SHELLPOWER::Init();
     SHELLTASKBAR::Init();
     SHELLTRAY::Init();
