@@ -6,6 +6,7 @@
 #include "../include/dwm.h"
 #include "../include/explorer.h"
 #include "../include/process.h"
+#include "../include/profile.h"
 #include "../include/services.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -25,6 +26,7 @@ static WINSTA::Desktop s_shell_desktop{};
 static DWM::Compositor s_compositor{};
 static EXPLORER::Shell s_shell{};
 static WINLOGON::LogonSession s_logon{};
+static PROFILE::UserProfile s_profile{};
 static u32 s_next_session_id = 1;
 
 static bool SmssCreateSystemSession(SystemSession& session) {
@@ -57,7 +59,9 @@ static bool WinlogonStart(InteractiveSession& session) {
 }
 
 static bool UserinitStart(InteractiveSession& session) {
-    return USERINIT::PrepareInteractiveUser(session.SessionId);
+    return PROFILE::LoadUserProfile(s_profile, session.SessionId, "DefaultUser") &&
+           PROFILE::ApplyEnvironment(s_profile) &&
+           USERINIT::PrepareInteractiveUser(session.SessionId, s_profile);
 }
 
 static bool ExplorerStart(InteractiveSession& session,
@@ -83,6 +87,7 @@ void Init() {
     s_compositor = {};
     s_shell = {};
     s_logon = {};
+    s_profile = {};
     s_next_session_id = 1;
     Debug::Print("[SMSS] Session manager initialized\r\n");
     KASSERT(SmssCreateSystemSession(s_system));

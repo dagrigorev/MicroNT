@@ -16,8 +16,10 @@ void Init() {
     Debug::Print("[USERINIT] Userinit subsystem initialized\r\n");
 }
 
-bool PrepareInteractiveUser(u32 session_id) {
-    Debug::Printf("[USERINIT] Session %u user profile initialized\r\n", session_id);
+bool PrepareInteractiveUser(u32 session_id, PROFILE::UserProfile& profile) {
+    KASSERT(profile.SessionId == session_id);
+    KASSERT(profile.EnvironmentReady);
+    Debug::Printf("[USERINIT] Session %u user environment applied\r\n", session_id);
     SYSCALL::SetCommands(nullptr, 0);
     return true;
 }

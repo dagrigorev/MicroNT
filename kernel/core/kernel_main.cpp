@@ -11,6 +11,7 @@
 #include "../include/process.h"
 #include "../include/sync.h"
 #include "../include/pe.h"
+#include "../include/profile.h"
 #include "../include/io.h"
 #include "../include/csrss.h"
 #include "../include/dwm.h"
@@ -254,6 +255,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     WINSTA::Init();
     DWM::Init();
     WINLOGON::Init();
+    PROFILE::Init();
     USERINIT::Init();
     EXPLORER::Init();
     SERVICES::Init();
