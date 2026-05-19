@@ -20,9 +20,13 @@ enum class HitTargetKind : u32 {
 
 struct PointerState {
     u32 SessionId;
+    u32 X;
+    u32 Y;
     HitTargetKind HotTarget;
     u32 TargetIndex;
     bool HitTestingReady;
+    bool LeftButtonDown;
+    bool ClickDelivered;
 };
 
 void Init();
@@ -31,5 +35,11 @@ bool AttachLayout(PointerState& pointer,
                   const DESKTOPMODEL::DesktopLayout& layout);
 bool PrimeDefaultHitTarget(PointerState& pointer,
                            const DESKTOPMODEL::DesktopLayout& layout);
+bool MovePointer(PointerState& pointer,
+                 const DESKTOPMODEL::DesktopLayout& layout,
+                 u32 x, u32 y);
+bool ClickPointer(PointerState& pointer,
+                  const DESKTOPMODEL::DesktopLayout& layout,
+                  u32 x, u32 y);
 
 } // namespace SHELLINPUT

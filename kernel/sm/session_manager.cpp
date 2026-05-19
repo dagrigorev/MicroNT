@@ -147,7 +147,8 @@ static bool InputHostStart(InteractiveSession& session) {
 static bool ShellInputStart(InteractiveSession& session) {
     return SHELLINPUT::AttachLayout(s_pointer_state, s_input_desktop,
                                     s_desktop_layout) &&
-           SHELLINPUT::PrimeDefaultHitTarget(s_pointer_state, s_desktop_layout);
+           SHELLINPUT::PrimeDefaultHitTarget(s_pointer_state, s_desktop_layout) &&
+           SHELLINPUT::ClickPointer(s_pointer_state, s_desktop_layout, 1040, 82);
 }
 
 static bool ShellActivationStart(InteractiveSession& session) {
