@@ -135,7 +135,15 @@ void Print(u16 port, const char* str);
 // VGA - GOP framebuffer console  (M24+)
 // ============================================================
 namespace VGA {
+    struct FramebufferInfo {
+        u32 Width;
+        u32 Height;
+        u32 Stride;
+        u32 Format;
+    };
+
     void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt);
+    bool GetFramebufferInfo(FramebufferInfo& info);
     void Init();
     void StartDesktop(const UXTHEME::Theme& theme); // themed shell over GOP framebuffer
     void ClearScreen();        // fast clear rows 1+, keeps header bar

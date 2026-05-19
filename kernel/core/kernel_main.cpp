@@ -15,6 +15,7 @@
 #include "../include/profile.h"
 #include "../include/io.h"
 #include "../include/csrss.h"
+#include "../include/displaycfg.h"
 #include "../include/dwm.h"
 #include "../include/explorer.h"
 #include "../include/inputhost.h"
@@ -259,6 +260,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     KASSERT(REGISTRY::LoadSystemHive());
     CSRSS::Init();
     WIN32K::Init();
+    DISPLAYCFG::Init();
     WINDOWMGR::Init();
     UXTHEME::Init();
     WINSTA::Init();

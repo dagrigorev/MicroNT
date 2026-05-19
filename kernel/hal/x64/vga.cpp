@@ -517,6 +517,16 @@ void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt) {
     s_rows = h / CHAR_H;  if (s_rows > 64)  s_rows = 64;
 }
 
+bool GetFramebufferInfo(FramebufferInfo& info) {
+    if (!s_fb || s_fb_w == 0 || s_fb_h == 0) return false;
+
+    info.Width = s_fb_w;
+    info.Height = s_fb_h;
+    info.Stride = s_fb_stride;
+    info.Format = s_fb_bgr ? 1u : 0u;
+    return true;
+}
+
 static void ResetTextSurface(u32 x, u32 y, u32 w, u32 h) {
     s_origin_x = x;
     s_origin_y = y;

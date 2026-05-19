@@ -1,6 +1,7 @@
 #pragma once
 // dwm.h -- MicroNT Desktop Window Manager boundary.
 
+#include "displaycfg.h"
 #include "ntdef.h"
 #include "shellhost.h"
 #include "uxtheme.h"
@@ -20,6 +21,7 @@ void Init();
 bool Start(Compositor& compositor, const WIN32K::SessionGraphics& graphics);
 void PresentShellDesktop(Compositor& compositor, WINSTA::Desktop& desktop,
                          const WINDOWMGR::DesktopScene& scene,
+                         const DISPLAYCFG::DisplayTarget& target,
                          const UXTHEME::Theme& theme);
 
 } // namespace DWM

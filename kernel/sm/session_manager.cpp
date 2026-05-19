@@ -3,6 +3,7 @@
 #include "../include/session.h"
 #include "../include/csrss.h"
 #include "../include/debug.h"
+#include "../include/displaycfg.h"
 #include "../include/dwm.h"
 #include "../include/explorer.h"
 #include "../include/inputhost.h"
@@ -33,6 +34,8 @@ static EXPLORER::Shell s_shell{};
 static SHELLHOST::ShellSurface s_shell_surface{};
 static INPUTHOST::InputDesktop s_input_desktop{};
 static WINDOWMGR::DesktopScene s_desktop_scene{};
+static DISPLAYCFG::DisplayMode s_display_mode{};
+static DISPLAYCFG::DisplayTarget s_display_target{};
 static UXTHEME::Theme s_theme{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
@@ -110,6 +113,13 @@ static bool InputHostStart(InteractiveSession& session) {
            INPUTHOST::ShowCursor(s_input_desktop);
 }
 
+static bool DisplayConfigStart(InteractiveSession& session) {
+    return DISPLAYCFG::QueryPrimaryMode(s_display_mode) &&
+           DISPLAYCFG::AttachSessionTarget(s_display_target, session.SessionId,
+                                           s_display_mode) &&
+           DISPLAYCFG::ApplyDesktopMetrics(s_display_target);
+}
+
 void Init() {
     s_system = {};
     s_services = {};
@@ -124,6 +134,8 @@ void Init() {
     s_shell_surface = {};
     s_input_desktop = {};
     s_desktop_scene = {};
+    s_display_mode = {};
+    s_display_target = {};
     s_theme = {};
     s_logon = {};
     s_profile = {};
@@ -147,13 +159,15 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(WinlogonStart(session));
     KASSERT(UserinitStart(session));
     KASSERT(DWM::Start(s_compositor, s_graphics));
+    KASSERT(DisplayConfigStart(session));
 
     KASSERT(ExplorerStart(session, cfg));
     KASSERT(UXTHEME::LoadDefaultTheme(s_theme));
     KASSERT(ShellHostStart(session));
     KASSERT(WindowManagerStart(session));
 
-    DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene, s_theme);
+    DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene,
+                             s_display_target, s_theme);
 
     KASSERT(InputHostStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));
