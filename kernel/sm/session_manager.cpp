@@ -6,6 +6,7 @@
 #include "../include/dwm.h"
 #include "../include/explorer.h"
 #include "../include/process.h"
+#include "../include/services.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
 #include "../include/win32k.h"
@@ -13,6 +14,7 @@
 namespace SM {
 
 static SystemSession s_system{};
+static SERVICES::ServiceControlPlane s_services{};
 static InteractiveSession s_interactive{};
 static CSRSS::Win32Session s_win32{};
 static WIN32K::SessionGraphics s_graphics{};
@@ -23,9 +25,12 @@ static u32 s_next_session_id = 1;
 
 static bool SmssCreateSystemSession(SystemSession& session) {
     session.SessionId = 0;
-    session.ServicesReady = true;
-    Debug::Print("[SMSS] Session 0 system services ready\r\n");
-    return true;
+    bool ok = SERVICES::StartControlPlane(s_services, session.SessionId) &&
+              SERVICES::StartCoreServices(s_services);
+    session.ServicesReady = s_services.ControlPlaneReady;
+    session.CoreServicesStarted = s_services.CoreServicesStarted;
+    if (ok) Debug::Print("[SMSS] Session 0 system services ready\r\n");
+    return ok;
 }
 
 static bool SmssCreateSession(InteractiveSession& session) {
@@ -64,6 +69,7 @@ static bool ExplorerStart(InteractiveSession& session,
 
 void Init() {
     s_system = {};
+    s_services = {};
     s_interactive = {};
     s_win32 = {};
     s_graphics = {};

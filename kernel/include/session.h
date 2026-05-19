@@ -29,6 +29,7 @@ struct InteractiveSession {
 struct SystemSession {
     u32  SessionId;
     bool ServicesReady;
+    bool CoreServicesStarted;
 };
 
 void Init();

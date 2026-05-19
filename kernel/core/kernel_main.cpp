@@ -15,6 +15,7 @@
 #include "../include/csrss.h"
 #include "../include/dwm.h"
 #include "../include/explorer.h"
+#include "../include/services.h"
 #include "../include/session.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -253,6 +254,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     WINLOGON::Init();
     USERINIT::Init();
     EXPLORER::Init();
+    SERVICES::Init();
     SM::Init();
 
     // ----------------------------------------------------------
@@ -1083,7 +1085,6 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         Sched::AddThread(uthread);
 
         while (!g_m20_ok) { Sched::Schedule(); }
-        Debug::Print("[MicroNT] M20 ready\r\n");
     }
 
     // ----------------------------------------------------------

@@ -543,8 +543,10 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             if (got >= 6 && kbuf[0]=='S' && kbuf[1]=='y' && kbuf[2]=='s' && kbuf[3]=='t')
                 g_m19_ok = 1;
             // M20: echo command output starts with "M20"
-            if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='0')
+            if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='0') {
+                if (!g_m20_ok) Debug::Print("\r\n[MicroNT] M20 ready\r\n");
                 g_m20_ok = 1;
+            }
             // M21: cat output echoes back written file with "M21" prefix
             if (got >= 3 && kbuf[0]=='M' && kbuf[1]=='2' && kbuf[2]=='1')
                 g_m21_ok = 1;
