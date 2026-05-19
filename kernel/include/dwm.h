@@ -3,6 +3,7 @@
 
 #include "ntdef.h"
 #include "shellhost.h"
+#include "windowmgr.h"
 #include "winsta.h"
 #include "win32k.h"
 
@@ -17,6 +18,6 @@ struct Compositor {
 void Init();
 bool Start(Compositor& compositor, const WIN32K::SessionGraphics& graphics);
 void PresentShellDesktop(Compositor& compositor, WINSTA::Desktop& desktop,
-                         const SHELLHOST::ShellSurface& surface);
+                         const WINDOWMGR::DesktopScene& scene);
 
 } // namespace DWM

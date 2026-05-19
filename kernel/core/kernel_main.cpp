@@ -23,6 +23,7 @@
 #include "../include/shellhost.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
+#include "../include/windowmgr.h"
 #include "../include/winsta.h"
 #include "../include/win32k.h"
 #include "../ldr/hello2_pe.h"
@@ -257,6 +258,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     KASSERT(REGISTRY::LoadSystemHive());
     CSRSS::Init();
     WIN32K::Init();
+    WINDOWMGR::Init();
     WINSTA::Init();
     DWM::Init();
     WINLOGON::Init();

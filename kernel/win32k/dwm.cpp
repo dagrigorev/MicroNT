@@ -21,12 +21,12 @@ bool Start(Compositor& compositor, const WIN32K::SessionGraphics& graphics) {
 }
 
 void PresentShellDesktop(Compositor& compositor, WINSTA::Desktop& desktop,
-                         const SHELLHOST::ShellSurface& surface) {
+                         const WINDOWMGR::DesktopScene& scene) {
     if (!compositor.Running) return;
-    if (!surface.BoundToExplorer || surface.SessionId != compositor.SessionId) return;
+    if (!scene.ZOrderReady || scene.SessionId != compositor.SessionId) return;
     if (!WINSTA::SwitchDesktop(desktop)) return;
-    Debug::Printf("[DWM] Session %u presenting ShellExperienceHost surface\r\n",
-                  compositor.SessionId);
+    Debug::Printf("[DWM] Session %u composing %u top-level windows\r\n",
+                  compositor.SessionId, scene.WindowCount);
     VGA::StartDesktop();
     VGA::WriteWelcome();
     compositor.DesktopPresented = true;
