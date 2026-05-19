@@ -25,6 +25,7 @@
 #include "../include/session.h"
 #include "../include/shellhost.h"
 #include "../include/shellact.h"
+#include "../include/shella11y.h"
 #include "../include/shellinput.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
@@ -279,6 +280,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     INPUTHOST::Init();
     SHELLINPUT::Init();
     SHELLACT::Init();
+    SHELLA11Y::Init();
     SERVICES::Init();
     SM::Init();
 
