@@ -9,6 +9,7 @@
 #include "../include/memory.h"
 #include "../include/object.h"
 #include "../include/process.h"
+#include "../include/registry.h"
 #include "../include/sync.h"
 #include "../include/pe.h"
 #include "../include/profile.h"
@@ -250,6 +251,8 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     LDR::Init();
     Debug::Print("[MicroNT] PE loader initialized\r\n");
 
+    REGISTRY::Init();
+    KASSERT(REGISTRY::LoadSystemHive());
     CSRSS::Init();
     WIN32K::Init();
     WINSTA::Init();

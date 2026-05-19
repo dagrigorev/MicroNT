@@ -7,6 +7,7 @@
 #include "../include/explorer.h"
 #include "../include/process.h"
 #include "../include/profile.h"
+#include "../include/registry.h"
 #include "../include/services.h"
 #include "../include/userinit.h"
 #include "../include/winlogon.h"
@@ -28,6 +29,9 @@ static EXPLORER::Shell s_shell{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
 static u32 s_next_session_id = 1;
+
+static constexpr const char* WINLOGON_KEY =
+    "\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon";
 
 static bool SmssCreateSystemSession(SystemSession& session) {
     session.SessionId = 0;
@@ -59,6 +63,10 @@ static bool WinlogonStart(InteractiveSession& session) {
 }
 
 static bool UserinitStart(InteractiveSession& session) {
+    const char* userinit = REGISTRY::QueryString(WINLOGON_KEY, "Userinit");
+    Debug::Printf("[SMSS] Session %u starting %s\r\n",
+                  session.SessionId, userinit ? userinit : "userinit.exe");
+
     return PROFILE::LoadUserProfile(s_profile, session.SessionId, "DefaultUser") &&
            PROFILE::ApplyEnvironment(s_profile) &&
            USERINIT::PrepareInteractiveUser(session.SessionId, s_profile);
@@ -67,8 +75,9 @@ static bool UserinitStart(InteractiveSession& session) {
 static bool ExplorerStart(InteractiveSession& session,
                           const ShellImageConfig& cfg) {
     Debug::Printf("[EXPLORER] Session %u shell bootstrap\r\n", session.SessionId);
+    const char* shell_name = REGISTRY::QueryString(WINLOGON_KEY, "Shell");
     USERINIT::ShellLaunchResult shell =
-        USERINIT::LaunchShell(session.SessionId, cfg);
+        USERINIT::LaunchShell(session.SessionId, shell_name, cfg);
     session.ShellProcess = shell.Process;
     session.ShellThread = shell.Thread;
     return EXPLORER::RegisterShell(s_shell, session.SessionId,

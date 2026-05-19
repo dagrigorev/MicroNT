@@ -24,14 +24,16 @@ bool PrepareInteractiveUser(u32 session_id, PROFILE::UserProfile& profile) {
     return true;
 }
 
-ShellLaunchResult LaunchShell(u32 session_id, const SM::ShellImageConfig& cfg) {
-    Debug::Printf("[USERINIT] Session %u launching shell explorer.exe\r\n",
-                  session_id);
+ShellLaunchResult LaunchShell(u32 session_id, const char* shell_name,
+                              const SM::ShellImageConfig& cfg) {
+    const char* process_name = shell_name ? shell_name : "explorer.exe";
+    Debug::Printf("[USERINIT] Session %u launching shell %s\r\n",
+                  session_id, process_name);
 
     u64 user_cr3 = VMM::CreateUserPml4();
     KASSERT(user_cr3);
 
-    KProcess* proc = PS::CreateProcess("explorer.exe", user_cr3);
+    KProcess* proc = PS::CreateProcess(process_name, user_cr3);
     KASSERT(proc);
 
     u64 ntdll_entry = 0;

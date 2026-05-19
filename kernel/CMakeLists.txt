@@ -68,6 +68,7 @@ set(KERNEL_SOURCES
     sm/csrss.cpp
     sm/explorer.cpp
     sm/profile.cpp
+    sm/registry.cpp
     sm/services.cpp
     sm/session_manager.cpp
     sm/userinit.cpp
