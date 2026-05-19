@@ -121,9 +121,11 @@ if ($listed -match [regex]::Escape("`"$VmName`"")) {
         --type hdd --medium none 2>&1 | Out-Null
 
     # Re-apply display settings (fix vmsvga -> VBoxVGA if needed)
-    Log 'Applying display settings (VBoxVGA for text-mode output)...'
+    Log 'Applying display settings (VBoxVGA + 1920x1080 GOP)...'
     & $vbox modifyvm $UUID --graphicscontroller VBoxVGA 2>&1 | Out-Null
-    & $vbox modifyvm $UUID --vram 16                  2>&1 | Out-Null
+    & $vbox modifyvm $UUID --vram 32                  2>&1 | Out-Null
+    & $vbox modifyvm $UUID --mouse ps2                 2>&1 | Out-Null
+    & $vbox setextradata $UUID CustomVideoMode1 '1920x1080x32' 2>&1 | Out-Null
 
 } else {
     Log "Creating new VM '$VmName'..."
@@ -138,10 +140,12 @@ if ($listed -match [regex]::Escape("`"$VmName`"")) {
     VBox modifyvm  $UUID --memory 256 --cpus 1                               | Out-Null
     VBox modifyvm  $UUID --boot1 disk --boot2 none --boot3 none --boot4 none | Out-Null
     VBox modifyvm  $UUID --firmware efi                                       | Out-Null
-    VBox modifyvm  $UUID --vram 16                                            | Out-Null
+    VBox modifyvm  $UUID --vram 32                                            | Out-Null
     # VBoxVGA = legacy VGA card, exposes 0xB8000 text buffer to the guest
     # vmsvga / vmsvga2 do NOT support legacy VGA text mode
     VBox modifyvm  $UUID --graphicscontroller VBoxVGA                         | Out-Null
+    VBox modifyvm  $UUID --mouse ps2                                          | Out-Null
+    VBox setextradata $UUID CustomVideoMode1 '1920x1080x32'                   | Out-Null
     VBox modifyvm  $UUID --audio-driver none                                  | Out-Null
     VBox modifyvm  $UUID --usb off                                            | Out-Null
     VBox storagectl $UUID --name SATA --add sata --controller IntelAhci      | Out-Null

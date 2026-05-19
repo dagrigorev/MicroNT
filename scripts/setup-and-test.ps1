@@ -247,6 +247,7 @@ if ($SkipVmRecreate) {
     VBox modifyvm $UUID --vram 16 | Out-Null
     VBox modifyvm $UUID --audio-driver none | Out-Null
     VBox modifyvm $UUID --usb off | Out-Null
+    VBox modifyvm $UUID --mouse ps2 | Out-Null
     VBox modifyvm $UUID --graphicscontroller vmsvga | Out-Null
     VBox modifyvm $UUID --uart1 0x3F8 4 | Out-Null
     VBox modifyvm $UUID --uartmode1 file $SerialLog | Out-Null

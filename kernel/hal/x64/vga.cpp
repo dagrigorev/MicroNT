@@ -282,6 +282,13 @@ static u32 s_row  = 1;
 static u32 s_col  = 0;
 static bool s_cursor_visible = false;  // is cursor currently drawn?
 
+static bool s_mouse_visible = false;
+static u32  s_mouse_x = 0;
+static u32  s_mouse_y = 0;
+static u32  s_mouse_backing[24 * 32];
+static u32 s_origin_x = 0;             // pixel origin of the text surface
+static u32 s_origin_y = 0;
+
 static constexpr u32 CHAR_W = 8;
 static constexpr u32 CHAR_H = 16;
 
@@ -307,12 +314,215 @@ static u32 AttrBg(u8 attr) { return ToPixel(s_palette[(attr >> 4) & 0x07]); }
 static void EraseCursor();
 static void DrawCursorShape();
 
+static void FillRect(u32 x, u32 y, u32 w, u32 h, u32 rgb) {
+    if (!s_fb || x >= s_fb_w || y >= s_fb_h) return;
+    if (x + w > s_fb_w) w = s_fb_w - x;
+    if (y + h > s_fb_h) h = s_fb_h - y;
+    u32 px = ToPixel(rgb);
+    for (u32 yy = 0; yy < h; ++yy) {
+        u32* row = s_fb + (y + yy) * s_fb_stride + x;
+        for (u32 xx = 0; xx < w; ++xx) row[xx] = px;
+    }
+}
+
+static void RectOutline(u32 x, u32 y, u32 w, u32 h, u32 light, u32 dark) {
+    if (w < 2 || h < 2) return;
+    FillRect(x, y, w, 1, light);
+    FillRect(x, y, 1, h, light);
+    FillRect(x, y + h - 1, w, 1, dark);
+    FillRect(x + w - 1, y, 1, h, dark);
+}
+
+static void FillVerticalGradient(u32 x, u32 y, u32 w, u32 h, u32 top, u32 bottom) {
+    if (h == 0) return;
+    int tr = (top >> 16) & 0xFF, tg = (top >> 8) & 0xFF, tb = top & 0xFF;
+    int br = (bottom >> 16) & 0xFF, bg = (bottom >> 8) & 0xFF, bb = bottom & 0xFF;
+    for (u32 yy = 0; yy < h; ++yy) {
+        u32 r = (u32)(tr + ((br - tr) * (int)yy) / (int)h);
+        u32 g = (u32)(tg + ((bg - tg) * (int)yy) / (int)h);
+        u32 b = (u32)(tb + ((bb - tb) * (int)yy) / (int)h);
+        FillRect(x, y + yy, w, 1, (r << 16) | (g << 8) | b);
+    }
+}
+
+static void DrawGlyphAbs(u32 px, u32 py, u8 ch, u32 fg, u32 bg) {
+    if (!s_fb) return;
+    const u8* g = &s_font[(u32)ch * 16];
+    for (u32 r = 0; r < CHAR_H; ++r) {
+        if (py + r >= s_fb_h) break;
+        u32* line = s_fb + (py + r) * s_fb_stride + px;
+        u8 bits = g[r];
+        for (u32 c = 0; c < CHAR_W; ++c) {
+            if (px + c < s_fb_w)
+                line[c] = (bits & (0x80u >> c)) ? fg : bg;
+        }
+    }
+}
+
+static void DrawTextAbs(u32 x, u32 y, const char* s, u32 fg, u32 bg) {
+    for (u32 i = 0; s[i]; ++i)
+        DrawGlyphAbs(x + i * CHAR_W, y, (u8)s[i], ToPixel(fg), ToPixel(bg));
+}
+
+static void FillEllipse(u32 cx, u32 cy, u32 rx, u32 ry, u32 rgb) {
+    if (!s_fb || rx == 0 || ry == 0) return;
+    u32 px = ToPixel(rgb);
+    u32 x0 = cx > rx ? cx - rx : 0;
+    u32 y0 = cy > ry ? cy - ry : 0;
+    u32 x1 = cx + rx < s_fb_w ? cx + rx : s_fb_w - 1;
+    u32 y1 = cy + ry < s_fb_h ? cy + ry : s_fb_h - 1;
+    u64 rr = (u64)rx * rx * ry * ry;
+    for (u32 y = y0; y <= y1; ++y) {
+        i64 dy = (i64)y - (i64)cy;
+        for (u32 x = x0; x <= x1; ++x) {
+            i64 dx = (i64)x - (i64)cx;
+            u64 v = (u64)(dx * dx) * ry * ry + (u64)(dy * dy) * rx * rx;
+            if (v <= rr) s_fb[y * s_fb_stride + x] = px;
+        }
+    }
+}
+
+static void DrawFlag(u32 x, u32 y, u32 scale) {
+    u32 s = scale ? scale : 1;
+    FillVerticalGradient(x, y, 11 * s, 11 * s, 0xFF744E, 0xE41D19);
+    FillVerticalGradient(x + 13 * s, y, 11 * s, 11 * s, 0x8BF168, 0x15A333);
+    FillVerticalGradient(x, y + 13 * s, 11 * s, 11 * s, 0x68D5FF, 0x116CE4);
+    FillVerticalGradient(x + 13 * s, y + 13 * s, 11 * s, 11 * s, 0xFFEC72, 0xEDA610);
+}
+
+static void DrawDesktopIcon(u32 x, u32 y, const char* label, u32 body, u32 shade) {
+    FillVerticalGradient(x + 17, y + 7, 42, 42, 0xFFFFFF, body);
+    FillRect(x + 23, y + 13, 30, 21, shade);
+    RectOutline(x + 17, y + 7, 42, 42, 0xFFFFFF, 0x375E9B);
+    FillRect(x + 4, y + 56, 72, 16, 0x247DD8);
+    DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
+}
+
+static void DrawFolderIcon(u32 x, u32 y, const char* label) {
+    FillRect(x + 18, y + 15, 38, 30, 0xFFC229);
+    FillRect(x + 22, y + 8, 20, 9, 0xFFE27A);
+    RectOutline(x + 18, y + 15, 38, 30, 0xFFF2A2, 0xDC8611);
+    FillRect(x + 4, y + 56, 72, 16, 0x247DD8);
+    DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
+}
+
+static void DrawPanelWindow(u32 x, u32 y, u32 w, u32 h, const char* title,
+                            bool toolbar, const char* status) {
+    FillRect(x + 8, y + 12, w, h, 0x174A86);
+    FillRect(x, y, w, h, 0xF8FCFF);
+    RectOutline(x, y, w, h, 0xFFFFFF, 0x2375D5);
+    FillVerticalGradient(x + 1, y + 1, w - 2, 30, 0x4CB4FF, 0x0960C5);
+    FillVerticalGradient(x + 8, y + 8, 15, 15, 0xFFFFFF, 0x0B5DBC);
+    DrawTextAbs(x + 30, y + 8, title, 0xFFFFFF, 0x197DE5);
+    u32 bx = x + w - 76;
+    for (u32 i = 0; i < 3; ++i) {
+        u32 c1 = i == 2 ? 0xFF927A : 0x72C6FF;
+        u32 c2 = i == 2 ? 0xE02618 : 0x1979E2;
+        FillVerticalGradient(bx + i * 24, y + 6, 20, 20, c1, c2);
+        RectOutline(bx + i * 24, y + 6, 20, 20, 0xC7DEFF, 0x0D2D89);
+    }
+    DrawTextAbs(bx + 6, y + 7, "_", 0xFFFFFF, 0x1979E2);
+    DrawTextAbs(bx + 30, y + 7, "o", 0xFFFFFF, 0x1979E2);
+    DrawTextAbs(bx + 54, y + 7, "x", 0xFFFFFF, 0xE02618);
+
+    u32 cy = y + 31;
+    if (toolbar) {
+        FillVerticalGradient(x + 1, cy, w - 2, 38, 0xFFFFFF, 0xEEF6FF);
+        FillRect(x + 1, cy + 37, w - 2, 1, 0xC8D9EF);
+        DrawTextAbs(x + 12, cy + 11, "< Back", 0x28445F, 0xF8FCFF);
+        FillRect(x + w - 250, cy + 7, 145, 24, 0xFFFFFF);
+        RectOutline(x + w - 250, cy + 7, 145, 24, 0xB9CBE0, 0xB9CBE0);
+        DrawTextAbs(x + w - 238, cy + 11, title, 0x39627F, 0xFFFFFF);
+        FillRect(x + w - 96, cy + 7, 84, 24, 0xFFFFFF);
+        RectOutline(x + w - 96, cy + 7, 84, 24, 0xB9CBE0, 0xB9CBE0);
+        DrawTextAbs(x + w - 86, cy + 11, "Search", 0x7C8DA0, 0xFFFFFF);
+        cy += 38;
+    }
+
+    FillVerticalGradient(x + 12, cy + 12, 150, h - (cy - y) - 46, 0xE7F3FF, 0xD3E8FF);
+    RectOutline(x + 12, cy + 12, 150, h - (cy - y) - 46, 0xFFFFFF, 0xC3D8EF);
+    DrawTextAbs(x + 24, cy + 24, "System Tasks", 0x153F77, 0xE7F3FF);
+    DrawTextAbs(x + 24, cy + 52, "View information", 0x244E7C, 0xE2EFFF);
+    DrawTextAbs(x + 24, cy + 78, "Change settings", 0x244E7C, 0xDFEDFF);
+    DrawTextAbs(x + 24, cy + 120, "Other Places", 0x153F77, 0xDCEBFF);
+
+    u32 px = x + 184;
+    DrawTextAbs(px, cy + 18, "Hard Disk Drives", 0x084FB4, 0xF8FCFF);
+    for (u32 i = 0; i < 4; ++i) {
+        u32 ix = px + (i % 2) * 190;
+        u32 iy = cy + 52 + (i / 2) * 72;
+        FillVerticalGradient(ix, iy + 8, 40, 25, 0xFFFFFF, 0x65788D);
+        RectOutline(ix, iy + 8, 40, 25, 0xFFFFFF, 0x65788D);
+        DrawTextAbs(ix + 52, iy, i == 0 ? "System (C:)" : (i == 1 ? "Data (D:)" : (i == 2 ? "DVD (E:)" : "USB (F:)")), 0x203B55, 0xF8FCFF);
+        FillRect(ix + 52, iy + 22, 100, 8, 0xEEF4FB);
+        FillVerticalGradient(ix + 53, iy + 23, 58 + i * 8, 6, 0x0A61D5, 0x4AA8FF);
+    }
+
+    FillVerticalGradient(x + 1, y + h - 24, w - 2, 23, 0xF5FBFF, 0xD9ECFF);
+    DrawTextAbs(x + 10, y + h - 18, status, 0x526A82, 0xE5F3FF);
+}
+
+static void DrawMouseCursor(u32 x, u32 y) {
+    static const char* rows[] = {
+        "X...........",
+        "XX..........",
+        "XOX.........",
+        "XOOX........",
+        "XOOOX.......",
+        "XOOOOX......",
+        "XOOOOOX.....",
+        "XOOOOOOX....",
+        "XOOOOOOOX...",
+        "XOOOOXXXX...",
+        "XOOXOX......",
+        "XOX..OX.....",
+        "XX...OX.....",
+        "X.....OX....",
+        "......OX....",
+        ".......X....",
+    };
+    for (u32 r = 0; r < 16; ++r) {
+        for (u32 c = 0; c < 12; ++c) {
+            char p = rows[r][c];
+            if (p == '.') continue;
+            FillRect(x + c * 2, y + r * 2, 2, 2, p == 'X' ? 0x000000 : 0xFFFFFF);
+        }
+    }
+}
+
+static void RestoreMouseCursor() {
+    if (!s_fb || !s_mouse_visible) return;
+    for (u32 y = 0; y < 32; ++y) {
+        if (s_mouse_y + y >= s_fb_h) break;
+        for (u32 x = 0; x < 24; ++x) {
+            if (s_mouse_x + x >= s_fb_w) break;
+            s_fb[(s_mouse_y + y) * s_fb_stride + (s_mouse_x + x)] =
+                s_mouse_backing[y * 24 + x];
+        }
+    }
+    s_mouse_visible = false;
+}
+
+static void SaveMouseCursor(u32 x0, u32 y0) {
+    if (!s_fb) return;
+    for (u32 y = 0; y < 32; ++y) {
+        for (u32 x = 0; x < 24; ++x) {
+            if (x0 + x < s_fb_w && y0 + y < s_fb_h) {
+                s_mouse_backing[y * 24 + x] =
+                    s_fb[(y0 + y) * s_fb_stride + (x0 + x)];
+            } else {
+                s_mouse_backing[y * 24 + x] = 0;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Draw one character at text cell (cx, cy) with given foreground/background
 // ---------------------------------------------------------------------------
 static void DrawChar(u32 cx, u32 cy, u8 ch, u32 fg, u32 bg) {
     if (!s_fb || cx >= s_cols || cy >= s_rows) return;
-    u32 px = cx * CHAR_W, py = cy * CHAR_H;
+    u32 px = s_origin_x + cx * CHAR_W, py = s_origin_y + cy * CHAR_H;
     const u8* g = &s_font[(u32)ch * 16];
     for (u32 r = 0; r < CHAR_H; ++r) {
         if (py + r >= s_fb_h) break;
@@ -393,8 +603,8 @@ static void EraseCursor() {
 static void DrawCursorShape() {
     if (!s_fb || s_row >= s_rows || s_col >= s_cols) return;
     // Underline cursor: last 2 pixel rows of the character cell
-    u32 px = s_col * CHAR_W;
-    u32 py = s_row * CHAR_H + CHAR_H - 2;
+    u32 px = s_origin_x + s_col * CHAR_W;
+    u32 py = s_origin_y + s_row * CHAR_H + CHAR_H - 2;
     u32 color = ToPixel(s_palette[7]);  // light gray
     for (u32 r = 0; r < 2 && (py + r) < s_fb_h; ++r) {
         u32* line = s_fb + (py + r) * s_fb_stride + px;
@@ -424,12 +634,241 @@ void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt) {
     s_fb_h      = h;
     s_fb_stride = stride;
     s_fb_bgr    = (fmt == 1);  // 1 = PixelBlueGreenRedReserved8BitPerColor
+    s_origin_x = 0;
+    s_origin_y = 0;
     s_cols = w / CHAR_W;  if (s_cols > 256) s_cols = 256;
     s_rows = h / CHAR_H;  if (s_rows > 64)  s_rows = 64;
 }
 
+bool GetFramebufferInfo(FramebufferInfo& info) {
+    if (!s_fb || s_fb_w == 0 || s_fb_h == 0) return false;
+
+    info.Width = s_fb_w;
+    info.Height = s_fb_h;
+    info.Stride = s_fb_stride;
+    info.Format = s_fb_bgr ? 1u : 0u;
+    return true;
+}
+
+static void ResetTextSurface(u32 x, u32 y, u32 w, u32 h) {
+    s_origin_x = x;
+    s_origin_y = y;
+    s_cols = w / CHAR_W; if (s_cols > 256) s_cols = 256;
+    s_rows = h / CHAR_H; if (s_rows > 64)  s_rows = 64;
+    if (s_cols < 20) s_cols = 20;
+    if (s_rows < 8)  s_rows = 8;
+
+    for (u32 r = 0; r < s_rows; ++r)
+        for (u32 c = 0; c < s_cols; ++c)
+            s_cells[r][c] = { ' ', 0x07 };
+    s_row = 1;
+    s_col = 0;
+    s_cursor_visible = false;
+}
+
+void StartDesktop(const UXTHEME::Theme& theme,
+                  const DESKTOPMODEL::DesktopLayout& layout) {
+    if (!s_fb) return;
+    s_mouse_visible = false;
+
+    // Desktop shell mockup: XP-redesign wallpaper, icon rail, open Start menu,
+    // taskbar, and several static shell windows around the live command window.
+    FillVerticalGradient(0, 0, s_fb_w, s_fb_h, 0x0771D9, 0x88DFFF);
+    FillEllipse(s_fb_w / 6, s_fb_h / 5, s_fb_w / 11, s_fb_h / 34, 0xFFFFFF);
+    FillEllipse(s_fb_w / 4, s_fb_h / 5 - 16, s_fb_w / 13, s_fb_h / 30, 0xF4FCFF);
+    FillEllipse((s_fb_w * 62) / 100, s_fb_h / 4, s_fb_w / 10, s_fb_h / 28, 0xF6FCFF);
+    FillEllipse((s_fb_w * 83) / 100, s_fb_h / 5, s_fb_w / 10, s_fb_h / 34, 0xFFFFFF);
+
+    u32 h1 = (s_fb_h * 63) / 100;
+    u32 h2 = (s_fb_h * 71) / 100;
+    u32 h3 = (s_fb_h * 79) / 100;
+    FillVerticalGradient(0, h1, s_fb_w, s_fb_h - h1, 0x9CF264, 0x299A3C);
+    FillVerticalGradient(0, h2, s_fb_w, s_fb_h - h2, 0x7BE754, 0x1C7F35);
+    FillVerticalGradient(0, h3, s_fb_w, s_fb_h - h3, 0x35B944, 0x1C8A35);
+    for (u32 x = 0; x < s_fb_w; x += 3) {
+        u32 y = h1 + ((x * 37) % 90);
+        if (y < s_fb_h) FillRect(x, y, 2, 3, 0xC8F7A6);
+    }
+
+    u32 task_h = s_fb_h >= 720 ? 44 : (s_fb_h >= 480 ? 38 : 30);
+    u32 task_y = s_fb_h > task_h ? s_fb_h - task_h : 0;
+    FillVerticalGradient(0, task_y, s_fb_w, task_h,
+                         theme.TaskbarTop, theme.TaskbarBottom);
+    FillRect(0, task_y, s_fb_w, 1, 0x7DB7FF);
+
+    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 28,
+                layout.BrandName ? layout.BrandName : "MicroNT",
+                0xFFFFFF, 0x159DFF);
+    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 48,
+                layout.BrandTag ? layout.BrandTag : "Simply Fast. Reliably Yours.",
+                0xFFFFFF, 0x159DFF);
+
+    u32 icon_x = 18, icon_y = 14;
+    for (u32 i = 0; i < layout.IconCount; ++i) {
+        u32 y = icon_y + i * 82;
+        const DESKTOPMODEL::DesktopIcon& icon = layout.Icons[i];
+        switch (icon.Kind) {
+        case DESKTOPMODEL::IconKind::Folder:
+            DrawFolderIcon(icon_x, y, icon.Label);
+            break;
+        case DESKTOPMODEL::IconKind::Network:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0x0C8BE8, 0x07418D);
+            break;
+        case DESKTOPMODEL::IconKind::Media:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0xFF6D14, 0xFFBD4A);
+            break;
+        case DESKTOPMODEL::IconKind::Control:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0x46A8FF, 0x1A55B7);
+            break;
+        case DESKTOPMODEL::IconKind::Recycle:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0xADC4D7, 0x6E8297);
+            break;
+        case DESKTOPMODEL::IconKind::Computer:
+        default:
+            DrawDesktopIcon(icon_x, y, icon.Label, 0x439AFF, 0x12356B);
+            break;
+        }
+    }
+
+    for (u32 i = 0; i < layout.WindowCount; ++i) {
+        const DESKTOPMODEL::ShellWindow& win = layout.Windows[i];
+        u32 x = win.X;
+        u32 y = win.Y;
+        u32 w = win.Width;
+        u32 h = win.Height;
+        if (x + w >= s_fb_w) x = s_fb_w > w + 18 ? s_fb_w - w - 18 : 12;
+        if (y + h >= task_y) y = task_y > h + 18 ? task_y - h - 18 : 12;
+        DrawPanelWindow(x, y, w, h, win.Title, win.Toolbar, win.Status);
+    }
+
+    u32 menu_w = s_fb_w >= 900 ? 345 : 300;
+    u32 menu_h = s_fb_h >= 700 ? 420 : 330;
+    u32 menu_y = task_y > menu_h ? task_y - menu_h : 0;
+    FillRect(8 + 8, menu_y + 12, menu_w, menu_h, 0x1C3765);
+    FillRect(8, menu_y, menu_w, menu_h, 0xFFFFFF);
+    RectOutline(8, menu_y, menu_w, menu_h, 0x7DB7FF, 0x0C5BB9);
+    FillVerticalGradient(9, menu_y + 1, menu_w - 2, 64, 0x1679D8, 0x0056BA);
+    DrawFlag(24, menu_y + 18, 1);
+    DrawTextAbs(58, menu_y + 24, "MicroNT", 0xFFFFFF, 0x0A62C0);
+    FillRect(9, menu_y + 65, (menu_w * 53) / 100, menu_h - 103, 0xFFFFFF);
+    FillVerticalGradient(9 + (menu_w * 53) / 100, menu_y + 65,
+                         menu_w - (menu_w * 53) / 100 - 2, menu_h - 103,
+                         0xD9EDFF, 0x79B6ED);
+    const char* left[] = { "Internet", "E-mail", "Media Player", "Documents",
+                           "Control Panel", "Help and Support", "Search", "Run..." };
+    for (u32 i = 0; i < 8; ++i) {
+        u32 yy = menu_y + 78 + i * 34;
+        if (i == 3) FillRect(16, yy - 5, (menu_w * 53) / 100 - 20, 28, 0xE5F2FF);
+        DrawTextAbs(28, yy, left[i], 0x12395E, i == 3 ? 0xE5F2FF : 0xFFFFFF);
+    }
+    const char* right[] = { "Admin", "My Documents", "My Pictures", "My Music",
+                            "My Computer", "Control Panel", "Devices", "Defaults" };
+    for (u32 i = 0; i < 8; ++i) {
+        u32 rx = 24 + (menu_w * 53) / 100;
+        DrawTextAbs(rx, menu_y + 80 + i * 32, right[i], 0x12395E, 0xB8D9F6);
+    }
+    FillVerticalGradient(9, menu_y + menu_h - 38, menu_w - 2, 37, 0x1D76D2, 0x064FA8);
+    DrawTextAbs(190, menu_y + menu_h - 25, "Log Off", 0xFFFFFF, 0x0F61B8);
+    DrawTextAbs(254, menu_y + menu_h - 25, "Turn Off", 0xFFFFFF, 0x0F61B8);
+
+    u32 start_w = s_fb_w >= 1280 ? 116 : (s_fb_w >= 640 ? 104 : 80);
+    FillVerticalGradient(8, task_y + 5, start_w, task_h - 10,
+                         theme.StartTop, theme.StartBottom);
+    RectOutline(8, task_y + 5, start_w, task_h - 10, 0xC6F4A5, 0x0A5A0A);
+    DrawFlag(20, task_y + 10, 1);
+    DrawTextAbs(56, task_y + 14, "Start", 0xFFFFFF, 0x2BA536);
+
+    u32 tbx = 136;
+    for (u32 i = 0; i < layout.WindowCount && tbx + 126 < s_fb_w; ++i) {
+        FillVerticalGradient(tbx, task_y + 6, 125, task_h - 12,
+                             0x4EB2F7, 0x0D53AD);
+        RectOutline(tbx, task_y + 6, 125, task_h - 12, 0x9BC3FF, 0x0B2D8F);
+        DrawTextAbs(tbx + 10, task_y + 15, layout.Windows[i].Title,
+                    0xFFFFFF, 0x2A79D0);
+        tbx += 132;
+    }
+    if (tbx + 126 < s_fb_w) {
+        FillVerticalGradient(tbx, task_y + 6, 125, task_h - 12,
+                             0x8BD1FF, 0x2475D6);
+        RectOutline(tbx, task_y + 6, 125, task_h - 12, 0x9BC3FF, 0x0B2D8F);
+        DrawTextAbs(tbx + 10, task_y + 15, "MicroNT Shell",
+                    0xFFFFFF, 0x5FA2EA);
+    }
+
+    u32 tray_w = s_fb_w >= 640 ? 154 : 96;
+    u32 tray_x = s_fb_w > tray_w ? s_fb_w - tray_w : 0;
+    FillRect(tray_x + 4, task_y + 5, tray_w - 8, task_h - 10, 0x0A65B5);
+    FillEllipse(tray_x + 18, task_y + task_h / 2, 6, 6, 0xA9F75B);
+    DrawTextAbs(tray_x + 34, task_y + 14, "NET  VOL  00:00", 0xFFFFFF, 0x0A65B5);
+
+    u32 win_x = s_fb_w >= 1280 ? 210 : 96;
+    u32 win_y = s_fb_h >= 900 ? 540 : 360;
+    u32 win_w = s_fb_w >= 1280 ? 760 : s_fb_w - win_x - 24;
+    u32 win_h = s_fb_h >= 900 ? 360 : 290;
+
+    FillRect(win_x + 5, win_y + 6, win_w, win_h, 0x24508A);
+    FillRect(win_x, win_y, win_w, win_h, theme.WindowFrame);
+    RectOutline(win_x, win_y, win_w, win_h, 0xFFFFFF, 0x315BA3);
+
+    FillVerticalGradient(win_x + 3, win_y + 3, win_w - 6, 28,
+                         theme.WindowTitleTop, theme.WindowTitleBottom);
+    DrawTextAbs(win_x + 12, win_y + 9, "MicroNT Command Prompt", 0xFFFFFF, 0x1C5DE4);
+    u32 bx = win_x + win_w - 76;
+    for (u32 i = 0; i < 3; ++i) {
+        FillVerticalGradient(bx + i * 23, win_y + 7, 19, 18, 0x75A7FF, 0x1E55CF);
+        RectOutline(bx + i * 23, win_y + 7, 19, 18, 0xC7DEFF, 0x0D2D89);
+    }
+    DrawTextAbs(bx + 6,  win_y + 8, "_", 0xFFFFFF, 0x4D83EF);
+    DrawTextAbs(bx + 29, win_y + 8, "o", 0xFFFFFF, 0x4D83EF);
+    DrawTextAbs(bx + 52, win_y + 8, "x", 0xFFFFFF, 0x4D83EF);
+
+    u32 client_x = win_x + 8;
+    u32 client_y = win_y + 36;
+    u32 client_w = win_w > 16 ? win_w - 16 : win_w;
+    u32 client_h = win_h > 72 ? win_h - 72 : win_h;
+    FillRect(client_x, client_y, client_w, client_h, 0x000000);
+    RectOutline(client_x - 1, client_y - 1, client_w + 2, client_h + 2, 0x7F9DB9, 0xFFFFFF);
+    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, theme.WindowFrame);
+    RectOutline(win_x + 8, win_y + win_h - 28, win_w - 16, 20, 0xFFFFFF, 0xACA899);
+
+    ResetTextSurface(client_x, client_y, client_w, client_h);
+
+    const char hdr[] = "*** MicroNT Shell - Windows XP style ***";
+    u32 hlen = sizeof(hdr) - 1;
+    u32 hstart = (s_cols > hlen) ? (s_cols - hlen) / 2 : 0;
+    for (u32 c = 0; c < s_cols; ++c) s_cells[0][c] = { ' ', 0x1F };
+    for (u32 i = 0; i < hlen && hstart + i < s_cols; ++i)
+        s_cells[0][hstart + i] = { (u8)hdr[i], 0x1F };
+    RedrawAll();
+    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   1920 x 1080 desktop target", 0x000000, theme.WindowFrame);
+    MoveMouseCursor(s_fb_w > 240 ? s_fb_w - 220 : win_x + win_w - 82,
+                    h1 > 140 ? h1 - 120 : win_y + 74);
+}
+
+void MoveMouseCursor(u32 x, u32 y) {
+    if (!s_fb) return;
+    RestoreMouseCursor();
+
+    u32 max_x = s_fb_w > 24 ? s_fb_w - 24 : 0;
+    u32 max_y = s_fb_h > 32 ? s_fb_h - 32 : 0;
+    if (x > max_x) x = max_x;
+    if (y > max_y) y = max_y;
+
+    s_mouse_x = x;
+    s_mouse_y = y;
+    SaveMouseCursor(s_mouse_x, s_mouse_y);
+    DrawMouseCursor(s_mouse_x, s_mouse_y);
+    s_mouse_visible = true;
+}
+
 void Init() {
     if (!s_fb) return;
+    s_origin_x = 0;
+    s_origin_y = 0;
+    s_cols = s_fb_w / CHAR_W;  if (s_cols > 256) s_cols = 256;
+    s_rows = s_fb_h / CHAR_H;  if (s_rows > 64)  s_rows = 64;
+    s_cursor_visible = false;
+    s_mouse_visible = false;
     // Erase the entire GPU framebuffer to solid black first,
     // so no OVMF splash/watermark bleeds through below the text area.
     u32 black = ToPixel(0x000000);
@@ -698,13 +1137,6 @@ static void RedrawRow(u32 r) {
         Cell& cell = s_cells[r][c];
         DrawChar(c, r, cell.ch, AttrFg(cell.attr), AttrBg(cell.attr));
     }
-}
-
-// Write a string into the cell buffer at (row, col) with attr, return end col.
-static u32 CellStr(u32 row, u32 col, const char* s, u8 attr) {
-    for (; *s && col < s_cols; ++s, ++col)
-        s_cells[row][col] = { (u8)*s, attr };
-    return col;
 }
 
 // Decimal format helpers (no libc).

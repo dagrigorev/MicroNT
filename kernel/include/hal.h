@@ -1,7 +1,9 @@
 #pragma once
 // hal.h - MicroNT Hardware Abstraction Layer interface
 
+#include "desktopmodel.h"
 #include "ntdef.h"
+#include "uxtheme.h"
 
 // ============================================================
 // Port I/O
@@ -134,8 +136,18 @@ void Print(u16 port, const char* str);
 // VGA - GOP framebuffer console  (M24+)
 // ============================================================
 namespace VGA {
+    struct FramebufferInfo {
+        u32 Width;
+        u32 Height;
+        u32 Stride;
+        u32 Format;
+    };
+
     void SetFramebuffer(u64 base, u32 w, u32 h, u32 stride, u32 fmt);
+    bool GetFramebufferInfo(FramebufferInfo& info);
     void Init();
+    void StartDesktop(const UXTHEME::Theme& theme,
+                      const DESKTOPMODEL::DesktopLayout& layout);
     void ClearScreen();        // fast clear rows 1+, keeps header bar
     void WriteWelcome();
     void Print(const char* s, u8 attr = 0x07);
@@ -144,6 +156,7 @@ namespace VGA {
     void UpdateCursor();       // show cursor at current position
     void BlinkCursor();        // toggle cursor blink (~every 50 PIT ticks)
     void UpdateStatusBar(u64 ticks); // update uptime + bottom hint bar (~every 100 ticks)
+    void MoveMouseCursor(u32 x, u32 y);
 }
 
 // ============================================================
@@ -152,5 +165,23 @@ namespace VGA {
 namespace KB {
     void Init();
     bool TryRead(char* out);   // non-blocking; returns false if buffer empty
+    void HandleIrq(u8 irq);
+}
+
+// ============================================================
+// Mouse - PS/2 auxiliary device
+// ============================================================
+namespace MOUSE {
+    struct Packet {
+        i32 DeltaX;
+        i32 DeltaY;
+        bool Left;
+        bool Right;
+        bool Middle;
+    };
+
+    void Init();
+    bool IsReady();
+    bool TryRead(Packet* out);
     void HandleIrq(u8 irq);
 }

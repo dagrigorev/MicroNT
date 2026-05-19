@@ -4,14 +4,42 @@
 #include "../include/ntdef.h"
 #include "../include/bootinfo.h"
 #include "../include/ntstatus.h"
+#include "../include/appmodel.h"
 #include "../include/debug.h"
 #include "../include/hal.h"
 #include "../include/memory.h"
 #include "../include/object.h"
 #include "../include/process.h"
+#include "../include/registry.h"
 #include "../include/sync.h"
 #include "../include/pe.h"
+#include "../include/profile.h"
 #include "../include/io.h"
+#include "../include/csrss.h"
+#include "../include/desktopmodel.h"
+#include "../include/displaycfg.h"
+#include "../include/dwm.h"
+#include "../include/explorer.h"
+#include "../include/inputhost.h"
+#include "../include/services.h"
+#include "../include/session.h"
+#include "../include/shellcommands.h"
+#include "../include/shellhost.h"
+#include "../include/shellact.h"
+#include "../include/shella11y.h"
+#include "../include/shellinput.h"
+#include "../include/shellnotify.h"
+#include "../include/shellplaces.h"
+#include "../include/shellpower.h"
+#include "../include/shellstart.h"
+#include "../include/shelltaskbar.h"
+#include "../include/shelltray.h"
+#include "../include/uxtheme.h"
+#include "../include/userinit.h"
+#include "../include/winlogon.h"
+#include "../include/windowmgr.h"
+#include "../include/winsta.h"
+#include "../include/win32k.h"
 #include "../ldr/hello2_pe.h"
 #include "../ldr/hello_pe.h"
 #include "../ldr/ntdll_pe.h"
@@ -98,6 +126,9 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     KB::Init();
     HAL::IrqRegister(1, KB::HandleIrq);  // PS/2 keyboard = IRQ1
     HAL::PicSetMask(1, false);
+    HAL::IrqRegister(12, MOUSE::HandleIrq);  // PS/2 mouse = IRQ12
+    MOUSE::Init();
+    HAL::PicSetMask(12, false);
 
     HAL::IdtInit();
     Debug::Print("[MicroNT] IDT initialized\r\n");
@@ -239,6 +270,36 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // ----------------------------------------------------------
     LDR::Init();
     Debug::Print("[MicroNT] PE loader initialized\r\n");
+
+    REGISTRY::Init();
+    KASSERT(REGISTRY::LoadSystemHive());
+    CSRSS::Init();
+    WIN32K::Init();
+    DISPLAYCFG::Init();
+    WINDOWMGR::Init();
+    DESKTOPMODEL::Init();
+    UXTHEME::Init();
+    WINSTA::Init();
+    DWM::Init();
+    WINLOGON::Init();
+    PROFILE::Init();
+    USERINIT::Init();
+    APPMODEL::Init();
+    EXPLORER::Init();
+    SHELLCOMMANDS::Init();
+    SHELLHOST::Init();
+    INPUTHOST::Init();
+    SHELLINPUT::Init();
+    SHELLACT::Init();
+    SHELLA11Y::Init();
+    SHELLSTART::Init();
+    SHELLPLACES::Init();
+    SHELLPOWER::Init();
+    SHELLTASKBAR::Init();
+    SHELLTRAY::Init();
+    SHELLNOTIFY::Init();
+    SERVICES::Init();
+    SM::Init();
 
     // ----------------------------------------------------------
     // 12. Initrd (TODO: parse MNTAR001 from boot volume)
@@ -1068,7 +1129,6 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         Sched::AddThread(uthread);
 
         while (!g_m20_ok) { Sched::Schedule(); }
-        Debug::Print("[MicroNT] M20 ready\r\n");
     }
 
     // ----------------------------------------------------------
@@ -1199,43 +1259,11 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // INTERACTIVE MODE
     // ================================================================
     {
-        // Pass no pre-programmed commands -> NtReadLine uses PS/2 keyboard
-        SYSCALL::SetCommands(nullptr, 0);
-
-        u64 user_cr3 = VMM::CreateUserPml4();
-        KASSERT(user_cr3);
-        KProcess* proc = PS::CreateProcess("micront.exe", user_cr3);
-        KASSERT(proc);
-
-        u64 ntdll_entry = 0;
-        NTSTATUS st = LDR::LoadAndRegister(
-            "ntdll.dll", s_ntdll_pe, s_ntdll_pe_size,
-            user_cr3, s_ntdll_image_base, &ntdll_entry);
-        KASSERT(NT_SUCCESS(st));
-
-        u64 entry_va = 0;
-        st = LDR::LoadPe(s_shell_pe, s_shell_pe_size,
-                          user_cr3, s_shell_image_base, &entry_va);
-        KASSERT(NT_SUCCESS(st));
-
-        constexpr u64 INTERACTIVE_STACK_VA = 0x9000500000ULL;
-        u64 stk_phys = PMM::AllocPage();
-        KASSERT(stk_phys);
-        for (u32 i=0;i<PAGE_SIZE;++i) reinterpret_cast<u8*>(stk_phys)[i]=0;
-        KASSERT(VMM::MapPageInto(user_cr3, INTERACTIVE_STACK_VA, stk_phys,
-                                  VMM::PTE_PRESENT|VMM::PTE_WRITABLE|VMM::PTE_USER));
-
-        KThread* uthread = PS::CreateUserThread(
-            proc, "micront.exe!main", entry_va, INTERACTIVE_STACK_VA + PAGE_SIZE);
-        KASSERT(uthread);
-
-        // Paint screen last -- after all setup, before AddThread.
-        // Uses direct buffer writes (same path as header) so it's guaranteed
-        // to appear regardless of s_row/s_col state.  Sets s_row=7.
-        VGA::Init();
-        VGA::WriteWelcome();
-
-        Sched::AddThread(uthread);
+        SM::ShellImageConfig shell_cfg {
+            s_ntdll_pe, s_ntdll_pe_size, s_ntdll_image_base,
+            s_shell_pe, s_shell_pe_size, s_shell_image_base
+        };
+        SM::StartInteractiveSession(shell_cfg);
 
         while (true) { Sched::Schedule(); }
     }

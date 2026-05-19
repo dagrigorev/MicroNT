@@ -44,6 +44,7 @@ set(KERNEL_SOURCES
     hal/x64/pit.cpp
     hal/x64/vga.cpp
     hal/x64/keyboard.cpp
+    hal/x64/mouse.cpp
     hal/x64/interrupts.asm
 
     # Core
@@ -63,6 +64,38 @@ set(KERNEL_SOURCES
     ps/process.cpp
     ps/scheduler.cpp
     ps/switch.asm
+
+    # Session manager / interactive shell bootstrap
+    sm/appmodel.cpp
+    sm/csrss.cpp
+    sm/explorer.cpp
+    sm/inputhost.cpp
+    sm/profile.cpp
+    sm/registry.cpp
+    sm/services.cpp
+    sm/shellhost.cpp
+    sm/session_manager.cpp
+    sm/userinit.cpp
+    sm/winlogon.cpp
+
+    # Win32 graphical subsystem boundary
+    win32k/compositor.cpp
+    win32k/desktopmodel.cpp
+    win32k/displaycfg.cpp
+    win32k/dwm.cpp
+    win32k/shellcommands.cpp
+    win32k/shellact.cpp
+    win32k/shella11y.cpp
+    win32k/shellinput.cpp
+    win32k/shellnotify.cpp
+    win32k/shellplaces.cpp
+    win32k/shellpower.cpp
+    win32k/shellstart.cpp
+    win32k/shelltaskbar.cpp
+    win32k/shelltray.cpp
+    win32k/uxtheme.cpp
+    win32k/windowmgr.cpp
+    win32k/winsta.cpp
 
     # I/O
     io/console.cpp

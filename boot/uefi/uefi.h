@@ -357,9 +357,11 @@ typedef struct {
     UINTN                                FrameBufferSize;
 } EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
 
-typedef struct {
-    void* QueryMode;
-    void* SetMode;
+struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
+    EFI_STATUS (*QueryMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL* This, UINT32 ModeNumber,
+                            UINTN* SizeOfInfo,
+                            EFI_GRAPHICS_OUTPUT_MODE_INFORMATION** Info);
+    EFI_STATUS (*SetMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL* This, UINT32 ModeNumber);
     void* Blt;
     EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE* Mode;
-} EFI_GRAPHICS_OUTPUT_PROTOCOL;
+};
