@@ -1,6 +1,7 @@
 // session_manager.cpp -- MicroNT interactive session bootstrap.
 
 #include "../include/session.h"
+#include "../include/appmodel.h"
 #include "../include/csrss.h"
 #include "../include/debug.h"
 #include "../include/displaycfg.h"
@@ -39,6 +40,7 @@ static DISPLAYCFG::DisplayTarget s_display_target{};
 static UXTHEME::Theme s_theme{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
+static APPMODEL::AppIdentity s_shell_app{};
 static u32 s_next_session_id = 1;
 
 static constexpr const char* WINLOGON_KEY =
@@ -87,8 +89,11 @@ static bool ExplorerStart(InteractiveSession& session,
                           const ShellImageConfig& cfg) {
     Debug::Printf("[EXPLORER] Session %u shell bootstrap\r\n", session.SessionId);
     const char* shell_name = REGISTRY::QueryString(WINLOGON_KEY, "Shell");
+    const char* image_name = shell_name ? shell_name : "explorer.exe";
+    KASSERT(APPMODEL::RegisterShellApp(s_shell_app, session.SessionId, image_name));
+    KASSERT(APPMODEL::ActivateShellApp(s_shell_app));
     USERINIT::ShellLaunchResult shell =
-        USERINIT::LaunchShell(session.SessionId, shell_name, cfg);
+        USERINIT::LaunchShell(session.SessionId, shell_name, s_shell_app, cfg);
     session.ShellProcess = shell.Process;
     session.ShellThread = shell.Thread;
     return EXPLORER::RegisterShell(s_shell, session.SessionId,
@@ -139,6 +144,7 @@ void Init() {
     s_theme = {};
     s_logon = {};
     s_profile = {};
+    s_shell_app = {};
     s_next_session_id = 1;
     Debug::Print("[SMSS] Session manager initialized\r\n");
     KASSERT(SmssCreateSystemSession(s_system));

@@ -4,6 +4,7 @@
 #include "../include/ntdef.h"
 #include "../include/bootinfo.h"
 #include "../include/ntstatus.h"
+#include "../include/appmodel.h"
 #include "../include/debug.h"
 #include "../include/hal.h"
 #include "../include/memory.h"
@@ -268,6 +269,7 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     WINLOGON::Init();
     PROFILE::Init();
     USERINIT::Init();
+    APPMODEL::Init();
     EXPLORER::Init();
     SHELLHOST::Init();
     INPUTHOST::Init();

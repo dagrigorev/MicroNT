@@ -25,8 +25,11 @@ bool PrepareInteractiveUser(u32 session_id, PROFILE::UserProfile& profile) {
 }
 
 ShellLaunchResult LaunchShell(u32 session_id, const char* shell_name,
+                              const APPMODEL::AppIdentity& identity,
                               const SM::ShellImageConfig& cfg) {
     const char* process_name = shell_name ? shell_name : "explorer.exe";
+    KASSERT(identity.Registered);
+    KASSERT(identity.SessionId == session_id);
     Debug::Printf("[USERINIT] Session %u launching shell %s\r\n",
                   session_id, process_name);
 

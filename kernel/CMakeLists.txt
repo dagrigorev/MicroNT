@@ -65,6 +65,7 @@ set(KERNEL_SOURCES
     ps/switch.asm
 
     # Session manager / interactive shell bootstrap
+    sm/appmodel.cpp
     sm/csrss.cpp
     sm/explorer.cpp
     sm/inputhost.cpp
