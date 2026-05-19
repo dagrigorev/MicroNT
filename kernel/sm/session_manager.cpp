@@ -18,6 +18,7 @@
 #include "../include/shella11y.h"
 #include "../include/shellinput.h"
 #include "../include/shellnotify.h"
+#include "../include/shellpower.h"
 #include "../include/shellstart.h"
 #include "../include/shelltaskbar.h"
 #include "../include/shelltray.h"
@@ -53,6 +54,7 @@ static SHELLA11Y::AccessibilityState s_accessibility_state{};
 static SHELLTRAY::TrayState s_tray_state{};
 static SHELLNOTIFY::NotificationQueue s_notification_queue{};
 static SHELLSTART::StartMenuState s_start_menu{};
+static SHELLPOWER::PowerState s_power_state{};
 static SHELLTASKBAR::TaskbarState s_taskbar_state{};
 static WINLOGON::LogonSession s_logon{};
 static PROFILE::UserProfile s_profile{};
@@ -175,6 +177,11 @@ static bool ShellTaskbarStart(InteractiveSession& session) {
            SHELLTASKBAR::PublishTaskbar(s_taskbar_state);
 }
 
+static bool ShellPowerStart(InteractiveSession& session) {
+    return SHELLPOWER::BuildPowerState(s_power_state, s_start_menu) &&
+           SHELLPOWER::PublishPowerState(s_power_state);
+}
+
 static bool ShellNotificationsStart(InteractiveSession& session) {
     return SHELLNOTIFY::CreateNotificationQueue(s_notification_queue,
                                                 s_tray_state) &&
@@ -212,6 +219,7 @@ void Init() {
     s_tray_state = {};
     s_notification_queue = {};
     s_start_menu = {};
+    s_power_state = {};
     s_taskbar_state = {};
     s_logon = {};
     s_profile = {};
@@ -252,6 +260,7 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(ShellActivationStart(session));
     KASSERT(ShellAccessibilityStart(session));
     KASSERT(ShellStartMenuStart(session));
+    KASSERT(ShellPowerStart(session));
     KASSERT(ShellTaskbarStart(session));
     KASSERT(ShellTrayStart(session));
     KASSERT(ShellNotificationsStart(session));
