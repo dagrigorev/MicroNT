@@ -82,6 +82,7 @@ constexpr u64 NT_QUERY_PROCESS_INFO = 34;  // NtQueryInformationProcess
 constexpr u64 NT_QUERY_THREAD_INFO  = 35;  // NtQueryInformationThread
 constexpr u64 NT_QUERY_SYSTEM_TIME  = 36;  // NtQuerySystemTime
 constexpr u64 NT_QUERY_PERF_COUNTER = 37;  // NtQueryPerformanceCounter
+constexpr u64 NT_CREATE_FILE_SECTION = 38; // NtCreateSection over a VFS file
 
 // M30: writable files delegated to VFS::WNode table.
 // Handle range 0x40-0x4F maps to VFS WNode indices 0-15.
@@ -196,6 +197,29 @@ static usize ReadUserBytes(u64 user_va, u8* kbuf, usize len) {
         copied += n;
     }
     return copied;
+}
+
+// Create a section object backed by a copy of `data` (file-backed mapping).
+// Returns a 1-based section handle, or 0 on failure.
+static u64 CreateSectionFromData(const u8* data, usize size) {
+    usize pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (!size || pages > 32) return 0;
+    for (usize i = 0; i < 8; ++i) {
+        if (s_sections[i].in_use) continue;
+        s_sections[i].page_count = pages;
+        s_sections[i].in_use     = true;
+        for (usize j = 0; j < pages; ++j) {
+            u64 phys = PMM::AllocPage();
+            if (!phys) { s_sections[i].in_use = false; return 0; }
+            u8* p = reinterpret_cast<u8*>(phys);
+            usize off = j * PAGE_SIZE;
+            for (usize k = 0; k < PAGE_SIZE; ++k)
+                p[k] = (off + k < size) ? data[off + k] : 0;
+            s_sections[i].phys[j] = phys;
+        }
+        return (u64)(i + 1);
+    }
+    return 0;
 }
 
 // Assembly entry point (syscall_entry.asm)
@@ -1091,6 +1115,22 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         return 0;
     }
 
+    case NT_CREATE_FILE_SECTION: {
+        // NtCreateSection over a VFS file. a1=name ptr, a2=name len.
+        // Returns a section handle to map with NtMapViewOfSection.
+        char name[64] = {};
+        usize nlen = a2 < 63 ? (usize)a2 : 63;
+        usize got = ReadUserBytes(a1, reinterpret_cast<u8*>(name), nlen);
+        name[got] = 0;
+        usize fsz = 0;
+        const u8* fdata = VFS::FindFile(name, &fsz);
+        if (!fdata || !fsz) return 0;
+        u64 h = CreateSectionFromData(fdata, fsz);
+        KDBG_TRACE("SYSCALL: NtCreateFileSection('%s', %llu bytes) -> handle %llu",
+                   name, (u64)fsz, h);
+        return h;
+    }
+
     case NT_MAP_VIEW: {
         if (!a1 || a1 > 8) return 0;
         KSection& sec = s_sections[a1 - 1];
@@ -1398,6 +1438,49 @@ void SetCommands(const char** cmds, u32 count) {
     for (u32 i = 0; i < count && i < 8; ++i)
         s_cmds[s_cmd_count++] = cmds[i];
     KDBG_INFO("SYSCALL: command queue loaded (%u commands)", s_cmd_count);
+}
+
+// Verify file-backed section objects: create a section from a VFS file, then
+// map it into a fresh user address space and read the bytes back -- the core
+// of memory-mapped files / DLL image mapping.
+bool SelfTestFileSection() {
+    usize sz = 0;
+    const u8* data = VFS::FindFile("hello3.exe", &sz);
+    if (!data || sz < 2) {
+        KDBG_INFO("SECTEST: hello3.exe not in VFS - skipping");
+        return true;
+    }
+    u64 h = CreateSectionFromData(data, sz);
+    if (!h) { KDBG_ERROR("SECTEST: section create failed"); return false; }
+    KSection& sec = s_sections[h - 1];
+
+    bool copy_ok = (reinterpret_cast<u8*>(sec.phys[0])[0] == 'M' &&
+                    reinterpret_cast<u8*>(sec.phys[0])[1] == 'Z');
+
+    bool map_ok = false;
+    u64 cr3 = VMM::CreateUserPml4();
+    if (cr3) {
+        u64 va = 0x600000000ULL;
+        bool mapped = true;
+        for (usize j = 0; j < sec.page_count; ++j)
+            if (!VMM::MapPageInto(cr3, va + j * PAGE_SIZE, sec.phys[j],
+                                  VMM::PTE_PRESENT | VMM::PTE_USER)) { mapped = false; break; }
+        if (mapped) {
+            u64 phys = VMM::TranslateInPml4(cr3, va);
+            if (phys) {
+                u8* mp = reinterpret_cast<u8*>(phys);
+                map_ok = (mp[0] == 'M' && mp[1] == 'Z');
+            }
+        }
+    }
+
+    KDBG_INFO("SECTEST: file section h=%llu pages=%llu copy=%s map=%s (MZ readback)",
+              h, (u64)sec.page_count, copy_ok ? "ok" : "BAD", map_ok ? "ok" : "BAD");
+
+    // Release the test section's pages.
+    for (usize j = 0; j < sec.page_count; ++j) PMM::FreePage(sec.phys[j]);
+    sec.in_use = false;
+    return copy_ok && map_ok;
 }
 
 } // namespace SYSCALL

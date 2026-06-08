@@ -285,6 +285,10 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     LDR::Init();
     Debug::Print("[MicroNT] PE loader initialized\r\n");
 
+    // Windows compat: verify file-backed section objects (memory-mapped
+    // files / DLL image mapping).
+    SYSCALL::SelfTestFileSection();
+
     REGISTRY::Init();
     KASSERT(REGISTRY::LoadSystemHive());
     CSRSS::Init();
