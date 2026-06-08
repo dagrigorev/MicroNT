@@ -76,19 +76,62 @@ constexpr u64 TEB_BASE = 0x7FFFE100000ULL;
 // Reported OS identity (Windows 11 24H2) -- matches KUSER_SHARED_DATA.
 constexpr u32 OS_MAJOR = 10, OS_MINOR = 0, OS_BUILD = 26100;
 
+// PEB->Ldr area, one page above the PEB.
+constexpr u64 LDR_VA          = PEB_VA + 0x1000;   // PEB_LDR_DATA
+constexpr u64 LDR_ENTRY_OFF   = 0x80;              // LDR_DATA_TABLE_ENTRY
+constexpr u64 LDR_BASENAME_OFF= 0x140;
+constexpr u64 LDR_FULLNAME_OFF= 0x200;
+
 static void SetupPeb(KProcess* p) {
     if (!p || !p->Cr3) return;
     u64 phys = PMM::AllocPage();
     if (!phys) return;
     auto* peb = reinterpret_cast<u8*>(phys);   // identity-mapped (< RAM)
     for (u32 i = 0; i < PAGE_SIZE; ++i) peb[i] = 0;
-    *reinterpret_cast<u32*>(peb + 0x118) = OS_MAJOR;   // OSMajorVersion
-    *reinterpret_cast<u32*>(peb + 0x11C) = OS_MINOR;   // OSMinorVersion
-    *reinterpret_cast<u16*>(peb + 0x120) = (u16)OS_BUILD;  // OSBuildNumber
-    *reinterpret_cast<u32*>(peb + 0x124) = 2;          // OSPlatformId = VER_PLATFORM_WIN32_NT
+    *reinterpret_cast<u64*>(peb + 0x010) = p->ImageBase;  // ImageBaseAddress
+    *reinterpret_cast<u64*>(peb + 0x018) = LDR_VA;        // Ldr (PEB_LDR_DATA*)
+    *reinterpret_cast<u32*>(peb + 0x118) = OS_MAJOR;      // OSMajorVersion
+    *reinterpret_cast<u32*>(peb + 0x11C) = OS_MINOR;      // OSMinorVersion
+    *reinterpret_cast<u16*>(peb + 0x120) = (u16)OS_BUILD; // OSBuildNumber
+    *reinterpret_cast<u32*>(peb + 0x124) = 2;             // OSPlatformId = VER_PLATFORM_WIN32_NT
     p->PebVa = PEB_VA;
     p->NextTebVa = TEB_BASE;
     VMM::MapPageInto(p->Cr3, PEB_VA, phys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+
+    // PEB->Ldr: a walkable loaded-module list with one entry for the main
+    // image (three circular LIST_ENTRY chains, exactly as Windows builds it).
+    u64 lphys = PMM::AllocPage();
+    if (!lphys) return;
+    auto* L = reinterpret_cast<u8*>(lphys);
+    for (u32 i = 0; i < PAGE_SIZE; ++i) L[i] = 0;
+    auto wq = [&](u64 off, u64 v) { *reinterpret_cast<u64*>(L + off) = v; };
+    auto wd = [&](u64 off, u32 v) { *reinterpret_cast<u32*>(L + off) = v; };
+    auto ww = [&](u64 off, u16 v) { *reinterpret_cast<u16*>(L + off) = v; };
+
+    const u64 E = LDR_ENTRY_OFF;
+    const u64 entry_va = LDR_VA + E;
+    // PEB_LDR_DATA
+    wd(0x00, 0x58); wd(0x04, 1);                          // Length, Initialized
+    wq(0x10, entry_va + 0x00); wq(0x18, entry_va + 0x00); // InLoadOrderModuleList
+    wq(0x20, entry_va + 0x10); wq(0x28, entry_va + 0x10); // InMemoryOrderModuleList
+    wq(0x30, entry_va + 0x20); wq(0x38, entry_va + 0x20); // InInitializationOrderModuleList
+    // LDR_DATA_TABLE_ENTRY (links point back to the three list heads)
+    wq(E + 0x00, LDR_VA + 0x10); wq(E + 0x08, LDR_VA + 0x10);
+    wq(E + 0x10, LDR_VA + 0x20); wq(E + 0x18, LDR_VA + 0x20);
+    wq(E + 0x20, LDR_VA + 0x30); wq(E + 0x28, LDR_VA + 0x30);
+    wq(E + 0x30, p->ImageBase);                           // DllBase
+    wq(E + 0x38, 0);                                      // EntryPoint
+    wd(E + 0x40, 0);                                      // SizeOfImage
+    u32 nlen = 0; while (p->Name[nlen]) ++nlen;
+    ww(E + 0x48, (u16)(nlen * 2)); ww(E + 0x4A, (u16)(nlen * 2 + 2));
+    wq(E + 0x50, LDR_VA + LDR_FULLNAME_OFF);              // FullDllName.Buffer
+    ww(E + 0x58, (u16)(nlen * 2)); ww(E + 0x5A, (u16)(nlen * 2 + 2));
+    wq(E + 0x60, LDR_VA + LDR_BASENAME_OFF);              // BaseDllName.Buffer
+    auto* bn = reinterpret_cast<u16*>(L + LDR_BASENAME_OFF);
+    auto* fn = reinterpret_cast<u16*>(L + LDR_FULLNAME_OFF);
+    for (u32 i = 0; i < nlen; ++i) { bn[i] = (u16)(u8)p->Name[i]; fn[i] = (u16)(u8)p->Name[i]; }
+    VMM::MapPageInto(p->Cr3, LDR_VA, lphys,
                      VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
 }
 
@@ -163,6 +206,20 @@ void Init() {
     Sched::Init();
     if (s_proc_count < 32) s_proc_reg[s_proc_count++] = s_system_process; // M19
     KDBG_INFO("PS: initialized (PID=%u TID=%u)", s_system_process->Pid, s_main_thread->Tid);
+}
+
+void NotifyImageLoaded(u64 cr3, u64 image_base) {
+    for (u32 i = 0; i < s_proc_count; ++i) {
+        KProcess* p = s_proc_reg[i];
+        if (!p || p->Cr3 != cr3 || !p->PebVa) continue;
+        p->ImageBase = image_base;
+        // Patch the live structures in the process address space.
+        u64 ph = VMM::TranslateInPml4(cr3, PEB_VA + 0x10);
+        if (ph) *reinterpret_cast<u64*>(ph) = image_base;     // PEB.ImageBaseAddress
+        u64 lh = VMM::TranslateInPml4(cr3, LDR_VA + LDR_ENTRY_OFF + 0x30);
+        if (lh) *reinterpret_cast<u64*>(lh) = image_base;     // Ldr entry DllBase
+        return;
+    }
 }
 
 KProcess* CreateProcess(const char* name, u64 cr3) {

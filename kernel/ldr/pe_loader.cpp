@@ -4,6 +4,7 @@
 #include "../include/memory.h"
 #include "../include/debug.h"
 #include "../include/ntstatus.h"
+#include "../include/process.h"
 
 // ============================================================
 // Internal PE constants
@@ -319,6 +320,9 @@ NTSTATUS LoadPe(const void* pe_data, usize pe_size,
     // 2. Resolve imports
     st = ResolveImports(base, pe_size, pml4_phys, load_base);
     if (!NT_SUCCESS(st)) return st;
+
+    // 3. Record the image base in the process PEB / PEB->Ldr (Windows compat).
+    PS::NotifyImageLoaded(pml4_phys, load_base);
 
     *entry_out = load_base + entry_rva;
     KDBG_INFO("LDR: entry -> 0x%llx", *entry_out);

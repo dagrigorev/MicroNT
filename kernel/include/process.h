@@ -103,6 +103,7 @@ struct KProcess {
     // hand out for threads of this process.
     u64         PebVa;
     u64         NextTebVa;
+    u64         ImageBase;   // main module base (PEB.ImageBaseAddress / Ldr DllBase)
 };
 
 // ============================================================
@@ -127,6 +128,11 @@ KThread*  CreateUserThread(KProcess* process, const char* name,
                              usize kernel_stack_size = 16384);
 
 [[noreturn]] void TerminateCurrentThread(i32 exit_code = 0);
+
+// Called by the PE loader after an image is mapped: records the image base and
+// patches PEB.ImageBaseAddress + the PEB->Ldr main-module DllBase for the
+// process whose address space is `cr3`.
+void NotifyImageLoaded(u64 cr3, u64 image_base);
 
 KProcess* SystemProcess();
 KThread*  MainThread();

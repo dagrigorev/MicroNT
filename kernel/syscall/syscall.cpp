@@ -755,6 +755,26 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                           "ThreadBasicInfo TEB=0x%llx CID=%u.%u\r\n",
                           t->Process->PebVa, t->Process->Pid,
                           t->TebVa, t->Process->Pid, t->Tid);
+
+            // Walk PEB->Ldr->InLoadOrderModuleList in the process's own address
+            // space to prove the loaded-module list is well-formed and named.
+            u64 peb_va = t->Process->PebVa;
+            if (peb_va) {
+                u64 ldr = *reinterpret_cast<volatile u64*>(peb_va + 0x18);
+                u64 head = ldr + 0x10;
+                u64 first = ldr ? *reinterpret_cast<volatile u64*>(head) : 0;
+                if (first && first != head) {
+                    u64 dllbase = *reinterpret_cast<volatile u64*>(first + 0x30);
+                    u16 wlen = *reinterpret_cast<volatile u16*>(first + 0x58);
+                    u64 nbuf = *reinterpret_cast<volatile u64*>(first + 0x60);
+                    char nm[24]; u32 c = 0;
+                    for (; nbuf && c < (u32)(wlen / 2) && c < 23; ++c)
+                        nm[c] = (char)*reinterpret_cast<volatile u16*>(nbuf + c * 2);
+                    nm[c] = 0;
+                    Debug::Printf("[PEB.Ldr] InLoadOrder module='%s' DllBase=0x%llx\r\n",
+                                  nm, dllbase);
+                }
+            }
         } else if (a1 == 1) {
             // Memory stats: provide enough data for visual bar rendering
             u64 free_pages  = (u64)PMM::FreePages();
