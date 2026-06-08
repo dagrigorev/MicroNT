@@ -417,60 +417,73 @@ static void DrawFolderIcon(u32 x, u32 y, const char* label) {
     DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
 }
 
+// Flat Windows 11 control glyphs (minimize / maximize / close) on a light
+// title bar.  Close is tinted red so it reads as the close affordance.
+static void DrawWinControls(u32 x, u32 y, u32 w, u32 th, u32 surface) {
+    u32 cw = 46;
+    u32 mid = y + th / 2;
+    FillRect(x + w - 3 * cw + cw / 2 - 5, mid, 11, 1, 0x202020);          // _
+    RectOutline(x + w - 2 * cw + cw / 2 - 5, mid - 5, 11, 11,
+                0x6A6A6A, 0x6A6A6A);                                      // []
+    DrawTextAbs(x + w - cw + cw / 2 - 4, mid - 8, "x", 0xC42B1C, surface); // x
+}
+
 static void DrawPanelWindow(u32 x, u32 y, u32 w, u32 h, const char* title,
                             bool toolbar, const char* status) {
-    FillRect(x + 8, y + 12, w, h, 0x174A86);
-    FillRect(x, y, w, h, 0xF8FCFF);
-    RectOutline(x, y, w, h, 0xFFFFFF, 0x2375D5);
-    FillVerticalGradient(x + 1, y + 1, w - 2, 30, 0x4CB4FF, 0x0960C5);
-    FillVerticalGradient(x + 8, y + 8, 15, 15, 0xFFFFFF, 0x0B5DBC);
-    DrawTextAbs(x + 30, y + 8, title, 0xFFFFFF, 0x197DE5);
-    u32 bx = x + w - 76;
-    for (u32 i = 0; i < 3; ++i) {
-        u32 c1 = i == 2 ? 0xFF927A : 0x72C6FF;
-        u32 c2 = i == 2 ? 0xE02618 : 0x1979E2;
-        FillVerticalGradient(bx + i * 24, y + 6, 20, 20, c1, c2);
-        RectOutline(bx + i * 24, y + 6, 20, 20, 0xC7DEFF, 0x0D2D89);
-    }
-    DrawTextAbs(bx + 6, y + 7, "_", 0xFFFFFF, 0x1979E2);
-    DrawTextAbs(bx + 30, y + 7, "o", 0xFFFFFF, 0x1979E2);
-    DrawTextAbs(bx + 54, y + 7, "x", 0xFFFFFF, 0xE02618);
+    const u32 surface = 0xF3F3F3;   // light Mica
+    const u32 border  = 0xDADADA;
+    const u32 ink     = 0x1A1A1A;
+    const u32 navbg   = 0xEAEAEA;
+    const u32 accent  = 0x0078D4;
+    u32 th = 32;
 
-    u32 cy = y + 31;
+    FillRect(x + 6, y + 9, w, h, 0x0E2348);             // soft drop shadow
+    FillRect(x, y, w, h, surface);                      // body
+    RectOutline(x, y, w, h, border, border);            // thin border
+    DrawTextAbs(x + 14, y + (th - 16) / 2, title, ink, surface);
+    FillRect(x, y + th, w, 1, 0xE6E6E6);                // hairline divider
+    DrawWinControls(x, y, w, th, surface);
+
+    u32 cy = y + th + 1;
     if (toolbar) {
-        FillVerticalGradient(x + 1, cy, w - 2, 38, 0xFFFFFF, 0xEEF6FF);
-        FillRect(x + 1, cy + 37, w - 2, 1, 0xC8D9EF);
-        DrawTextAbs(x + 12, cy + 11, "< Back", 0x28445F, 0xF8FCFF);
-        FillRect(x + w - 250, cy + 7, 145, 24, 0xFFFFFF);
-        RectOutline(x + w - 250, cy + 7, 145, 24, 0xB9CBE0, 0xB9CBE0);
-        DrawTextAbs(x + w - 238, cy + 11, title, 0x39627F, 0xFFFFFF);
-        FillRect(x + w - 96, cy + 7, 84, 24, 0xFFFFFF);
-        RectOutline(x + w - 96, cy + 7, 84, 24, 0xB9CBE0, 0xB9CBE0);
-        DrawTextAbs(x + w - 86, cy + 11, "Search", 0x7C8DA0, 0xFFFFFF);
-        cy += 38;
+        FillRect(x + 1, cy, w - 2, 36, 0xF7F7F7);
+        FillRect(x + 1, cy + 36, w - 2, 1, 0xE6E6E6);
+        DrawTextAbs(x + 14, cy + 12, "<  >", 0x4A4A4A, 0xF7F7F7);
+        FillRect(x + 70, cy + 6, w - 230, 24, 0xFFFFFF);   // address pill
+        RectOutline(x + 70, cy + 6, w - 230, 24, 0xCFCFCF, 0xCFCFCF);
+        DrawTextAbs(x + 82, cy + 11, title, 0x3A3A3A, 0xFFFFFF);
+        FillRect(x + w - 150, cy + 6, 138, 24, 0xFFFFFF);  // search pill
+        RectOutline(x + w - 150, cy + 6, 138, 24, 0xCFCFCF, 0xCFCFCF);
+        DrawTextAbs(x + w - 138, cy + 11, "Search", 0x9A9A9A, 0xFFFFFF);
+        cy += 37;
     }
 
-    FillVerticalGradient(x + 12, cy + 12, 150, h - (cy - y) - 46, 0xE7F3FF, 0xD3E8FF);
-    RectOutline(x + 12, cy + 12, 150, h - (cy - y) - 46, 0xFFFFFF, 0xC3D8EF);
-    DrawTextAbs(x + 24, cy + 24, "System Tasks", 0x153F77, 0xE7F3FF);
-    DrawTextAbs(x + 24, cy + 52, "View information", 0x244E7C, 0xE2EFFF);
-    DrawTextAbs(x + 24, cy + 78, "Change settings", 0x244E7C, 0xDFEDFF);
-    DrawTextAbs(x + 24, cy + 120, "Other Places", 0x153F77, 0xDCEBFF);
+    // Left navigation pane.
+    u32 nav_h = h - (cy - y) - 34;
+    FillRect(x + 8, cy + 8, 168, nav_h, navbg);
+    DrawTextAbs(x + 20, cy + 20, "Home", accent, navbg);
+    DrawTextAbs(x + 20, cy + 48, "Gallery", 0x3A3A3A, navbg);
+    DrawTextAbs(x + 20, cy + 84, "This PC", 0x3A3A3A, navbg);
+    DrawTextAbs(x + 20, cy + 112, "Network", 0x3A3A3A, navbg);
 
-    u32 px = x + 184;
-    DrawTextAbs(px, cy + 18, "Hard Disk Drives", 0x084FB4, 0xF8FCFF);
+    // Devices and drives (content area).
+    u32 px = x + 200;
+    DrawTextAbs(px, cy + 16, "Devices and drives", 0x5A5A5A, surface);
     for (u32 i = 0; i < 4; ++i) {
-        u32 ix = px + (i % 2) * 190;
-        u32 iy = cy + 52 + (i / 2) * 72;
-        FillVerticalGradient(ix, iy + 8, 40, 25, 0xFFFFFF, 0x65788D);
-        RectOutline(ix, iy + 8, 40, 25, 0xFFFFFF, 0x65788D);
-        DrawTextAbs(ix + 52, iy, i == 0 ? "System (C:)" : (i == 1 ? "Data (D:)" : (i == 2 ? "DVD (E:)" : "USB (F:)")), 0x203B55, 0xF8FCFF);
-        FillRect(ix + 52, iy + 22, 100, 8, 0xEEF4FB);
-        FillVerticalGradient(ix + 53, iy + 23, 58 + i * 8, 6, 0x0A61D5, 0x4AA8FF);
+        u32 ix = px + (i % 2) * 200;
+        u32 iy = cy + 48 + (i / 2) * 76;
+        FillRect(ix, iy + 6, 42, 28, 0xD7DEE8);
+        RectOutline(ix, iy + 6, 42, 28, 0xBFC8D4, 0xBFC8D4);
+        const char* dn = i == 0 ? "System (C:)" : (i == 1 ? "Data (D:)"
+                       : (i == 2 ? "DVD (E:)" : "USB (F:)"));
+        DrawTextAbs(ix + 54, iy, dn, 0x2A2A2A, surface);
+        FillRect(ix + 54, iy + 24, 130, 6, 0xE2E2E2);
+        FillRect(ix + 54, iy + 24, 70 + i * 10, 6, accent);
     }
 
-    FillVerticalGradient(x + 1, y + h - 24, w - 2, 23, 0xF5FBFF, 0xD9ECFF);
-    DrawTextAbs(x + 10, y + h - 18, status, 0x526A82, 0xE5F3FF);
+    // Status bar.
+    FillRect(x + 1, y + h - 26, w - 2, 25, 0xECECEC);
+    DrawTextAbs(x + 12, y + h - 19, status, 0x5A5A5A, 0xECECEC);
 }
 
 static void DrawMouseCursor(u32 x, u32 y) {
@@ -832,30 +845,23 @@ void StartDesktop(const UXTHEME::Theme& theme,
     u32 win_w = s_fb_w >= 1280 ? 760 : s_fb_w - win_x - 24;
     u32 win_h = s_fb_h >= 900 ? 360 : 290;
 
-    FillRect(win_x + 5, win_y + 6, win_w, win_h, 0x24508A);
-    FillRect(win_x, win_y, win_w, win_h, theme.WindowFrame);
-    RectOutline(win_x, win_y, win_w, win_h, 0xFFFFFF, 0x315BA3);
+    const u32 cmd_surface = theme.WindowFrame;   // light Mica
+    FillRect(win_x + 6, win_y + 9, win_w, win_h, 0x0E2348);    // soft shadow
+    FillRect(win_x, win_y, win_w, win_h, cmd_surface);
+    RectOutline(win_x, win_y, win_w, win_h, 0xDADADA, 0xDADADA);
 
-    FillVerticalGradient(win_x + 3, win_y + 3, win_w - 6, 28,
-                         theme.WindowTitleTop, theme.WindowTitleBottom);
-    DrawTextAbs(win_x + 12, win_y + 9, "MicroNT Command Prompt", 0xFFFFFF, 0x1C5DE4);
-    u32 bx = win_x + win_w - 76;
-    for (u32 i = 0; i < 3; ++i) {
-        FillVerticalGradient(bx + i * 23, win_y + 7, 19, 18, 0x75A7FF, 0x1E55CF);
-        RectOutline(bx + i * 23, win_y + 7, 19, 18, 0xC7DEFF, 0x0D2D89);
-    }
-    DrawTextAbs(bx + 6,  win_y + 8, "_", 0xFFFFFF, 0x4D83EF);
-    DrawTextAbs(bx + 29, win_y + 8, "o", 0xFFFFFF, 0x4D83EF);
-    DrawTextAbs(bx + 52, win_y + 8, "x", 0xFFFFFF, 0x4D83EF);
+    DrawTextAbs(win_x + 14, win_y + 8, "MicroNT Terminal", 0x1A1A1A, cmd_surface);
+    FillRect(win_x, win_y + 32, win_w, 1, 0xE6E6E6);
+    DrawWinControls(win_x, win_y, win_w, 32, cmd_surface);
 
     u32 client_x = win_x + 8;
-    u32 client_y = win_y + 36;
+    u32 client_y = win_y + 40;
     u32 client_w = win_w > 16 ? win_w - 16 : win_w;
-    u32 client_h = win_h > 72 ? win_h - 72 : win_h;
-    FillRect(client_x, client_y, client_w, client_h, 0x000000);
-    RectOutline(client_x - 1, client_y - 1, client_w + 2, client_h + 2, 0x7F9DB9, 0xFFFFFF);
-    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, theme.WindowFrame);
-    RectOutline(win_x + 8, win_y + win_h - 28, win_w - 16, 20, 0xFFFFFF, 0xACA899);
+    u32 client_h = win_h > 80 ? win_h - 80 : win_h;
+    FillRect(client_x, client_y, client_w, client_h, 0x0C0C0C);  // Win11 Terminal
+    RectOutline(client_x - 1, client_y - 1, client_w + 2, client_h + 2,
+                0xDADADA, 0xDADADA);
+    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, cmd_surface);
 
     ResetTextSurface(client_x, client_y, client_w, client_h);
 
