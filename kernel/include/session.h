@@ -37,7 +37,8 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg);
 
 // Drain pending PS/2 mouse input and drive the shell hit-test model: moves the
 // logical pointer, and reacts to clicks (e.g. toggling the Start menu).  Called
-// from the kernel's interactive idle loop after the session is up.
-void PumpInteractiveInput();
+// from the kernel's interactive idle loop after the session is up.  Returns
+// true if anything changed the framebuffer (so the caller can flush it).
+bool PumpInteractiveInput();
 
 } // namespace SM

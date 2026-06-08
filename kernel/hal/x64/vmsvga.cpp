@@ -223,10 +223,10 @@ void Present() {
     FifoPush(0);
     FifoPush(s_width);
     FifoPush(s_height);
+    // Kick the device to process the FIFO. We do NOT busy-poll SVGA_REG_BUSY:
+    // each port access is a VM-exit, and spinning here is what kept the host
+    // CPU high. The host consumes the UPDATE asynchronously.
     RegWrite(SVGA_REG_SYNC, 1);
-    // Drain: wait for the device to consume the command.
-    u32 guard = 0;
-    while (RegRead(SVGA_REG_BUSY) != 0 && ++guard < 100000) { }
 }
 
 } // namespace VMSVGA

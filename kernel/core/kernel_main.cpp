@@ -1271,17 +1271,24 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         };
         SM::StartInteractiveSession(shell_cfg);
 
+        VMSVGA::Present();                // flush the freshly composed desktop
         u64 last_present = 0;
         while (true) {
-            SM::PumpInteractiveInput();   // drain PS/2 mouse -> shell hit-testing
-            // Flush the framebuffer to the host ~30 fps when the SVGA driver
-            // owns the display (no-op under bare GOP scanout).
+            bool changed = SM::PumpInteractiveInput();  // PS/2 mouse -> hit-test
+            // Flush the framebuffer to the host only when it changed (mouse
+            // moved / desktop repainted), plus a low-rate keepalive (~6 fps)
+            // for the blinking cursor and clock. Presenting every tick was a
+            // VM-exit storm that kept the host CPU busy while idle.
             u64 now = HAL::PitTicks();
-            if (now - last_present >= 3) {
+            if (changed || now - last_present >= 15) {
                 VMSVGA::Present();
                 last_present = now;
             }
-            Sched::Schedule();
+            Sched::Schedule();            // yield to any ready thread
+            // Idle: sleep the CPU until the next interrupt instead of
+            // busy-spinning. The PIT (100 Hz) plus keyboard/mouse IRQs wake us
+            // promptly, so input stays responsive while idle CPU drops to ~0.
+            HAL::HaltUntilInterrupt();
         }
     }
 }

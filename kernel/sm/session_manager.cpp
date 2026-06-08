@@ -335,13 +335,18 @@ static void HandleShellClick(SHELLINPUT::HitTargetKind target, u32 index) {
     }
 }
 
-void PumpInteractiveInput() {
-    if (!s_pointer_state.HitTestingReady || !s_desktop_layout.Ready) return;
+bool PumpInteractiveInput() {
+    if (!s_pointer_state.HitTestingReady || !s_desktop_layout.Ready) return false;
 
+    bool changed = false;
     MOUSE::Packet packet{};
     while (MOUSE::TryRead(&packet)) {
         i32 mx = 0, my = 0;
         if (!MOUSE::CurrentPosition(&mx, &my)) break;
+
+        // Any mouse packet moved/clicked the cursor, which the IRQ has already
+        // drawn into the framebuffer, so the frame needs flushing.
+        changed = true;
 
         SHELLINPUT::PointerEvent event = SHELLINPUT::ProcessPointer(
             s_pointer_state, s_desktop_layout,
@@ -351,6 +356,7 @@ void PumpInteractiveInput() {
             HandleShellClick(event.Target, event.TargetIndex);
         }
     }
+    return changed;
 }
 
 } // namespace SM
