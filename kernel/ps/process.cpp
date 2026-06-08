@@ -164,6 +164,17 @@ static void SetupPeb(KProcess* p) {
     *reinterpret_cast<u64*>(peb + 0x20) = PARAMS_VA;         // PEB.ProcessParameters
     VMM::MapPageInto(p->Cr3, PARAMS_VA, pphys,
                      VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+
+    // PEB.ProcessHeap: a committed region GetProcessHeap()/HeapAlloc build on.
+    u64 hphys = PMM::AllocPage();
+    if (hphys) {
+        auto* H = reinterpret_cast<u8*>(hphys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) H[i] = 0;
+        constexpr u64 HEAP_VA = PEB_VA + 0x3000;
+        *reinterpret_cast<u64*>(peb + 0x30) = HEAP_VA;        // PEB.ProcessHeap
+        VMM::MapPageInto(p->Cr3, HEAP_VA, hphys,
+                         VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+    }
 }
 
 static u64 SetupTeb(KProcess* p, u32 tid, u64 user_stack_top) {
@@ -179,6 +190,9 @@ static u64 SetupTeb(KProcess* p, u32 tid, u64 user_stack_top) {
     *reinterpret_cast<u64*>(teb + 0x40) = p->Pid;           // ClientId.UniqueProcess
     *reinterpret_cast<u64*>(teb + 0x48) = tid;              // ClientId.UniqueThread
     *reinterpret_cast<u64*>(teb + 0x60) = p->PebVa;         // ProcessEnvironmentBlock
+    // ThreadLocalStoragePointer -> a zeroed 64-slot TLS array inside this page
+    // (TEB is otherwise unused past 0x68; 0x800 is comfortably clear).
+    *reinterpret_cast<u64*>(teb + 0x58) = teb_va + 0x800;
     VMM::MapPageInto(p->Cr3, teb_va, phys,
                      VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
     return teb_va;

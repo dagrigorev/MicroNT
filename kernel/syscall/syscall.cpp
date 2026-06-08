@@ -781,6 +781,13 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                 Debug::Printf("[TEB/PEB] gs=0x%llx TEB.Self=0x%llx PEB=0x%llx "
                               "OSBuild=%u\r\n",
                               gsbase, teb_self, peb_ptr, peb_build);
+
+                // Thread runtime: TLS pointer (TEB+0x58) + ProcessHeap (PEB+0x30).
+                u64 tls = 0;
+                __asm__ volatile("movq %%gs:0x58, %0" : "=r"(tls));
+                u64 heap = peb_ptr
+                    ? *reinterpret_cast<volatile u64*>(peb_ptr + 0x30) : 0;
+                Debug::Printf("[RUNTIME] TLS=0x%llx ProcessHeap=0x%llx\r\n", tls, heap);
             }
 
             // Verify the NtQueryInformation* data for this live user thread.
