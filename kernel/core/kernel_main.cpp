@@ -54,6 +54,7 @@
 #include "../ldr/hello8_pe.h"
 #include "../ldr/hello9_pe.h"
 #include "../ldr/hello10_pe.h"
+#include "../ldr/wintest_pe.h"
 
 
 
@@ -1327,6 +1328,39 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
         while (!g_seh_delivered) { Sched::Schedule(); }
         Debug::Print("[MicroNT] SEH ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // WINPE: load and run a PE32+ compiled from C++ source by the user-mode
+    // build pipeline (scripts/build-user.ps1 -> kernel/ldr/wintest_pe.h).
+    // Proves the toolchain path to running real Windows-style binaries.
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        u64 cr3 = VMM::CreateUserPml4();
+        KASSERT(cr3);
+        KProcess* proc = PS::CreateProcess("wintest.exe", cr3);
+        KASSERT(proc);
+
+        u64 entry_va = 0;
+        NTSTATUS st = LDR::LoadPe(s_wintest_pe, s_wintest_pe_size,
+                                  cr3, s_wintest_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        constexpr u64 STK_VA = 0x141000000ULL;   // above the 0x140000000 image
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) reinterpret_cast<u8*>(stk_phys)[i] = 0;
+        KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+
+        KThread* th = PS::CreateUserThread(proc, "wintest.exe!Entry",
+                                           entry_va, STK_VA + PAGE_SIZE);
+        KASSERT(th);
+        Sched::AddThread(th);
+
+        while (!g_m8_write_ok) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] WINPE ready\r\n");
     }
 
     // ----------------------------------------------------------
