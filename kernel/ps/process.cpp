@@ -133,6 +133,37 @@ static void SetupPeb(KProcess* p) {
     for (u32 i = 0; i < nlen; ++i) { bn[i] = (u16)(u8)p->Name[i]; fn[i] = (u16)(u8)p->Name[i]; }
     VMM::MapPageInto(p->Cr3, LDR_VA, lphys,
                      VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+
+    // PEB->ProcessParameters: RTL_USER_PROCESS_PARAMETERS with ImagePathName
+    // and CommandLine, as read by GetCommandLineW / the CRT startup.
+    u64 pphys = PMM::AllocPage();
+    if (!pphys) return;
+    auto* P = reinterpret_cast<u8*>(pphys);
+    for (u32 i = 0; i < PAGE_SIZE; ++i) P[i] = 0;
+    constexpr u64 PARAMS_VA = PEB_VA + 0x2000;
+    constexpr u64 IMG_OFF = 0x100, CMD_OFF = 0x200;
+    *reinterpret_cast<u32*>(P + 0x00) = PAGE_SIZE;   // MaximumLength
+    *reinterpret_cast<u32*>(P + 0x04) = PAGE_SIZE;   // Length
+    // ImagePathName = "C:\Windows\<name>"
+    char path[96]; u32 pl = 0;
+    const char* pre = "C:\\Windows\\";
+    for (u32 i = 0; pre[i]; ++i) path[pl++] = pre[i];
+    for (u32 i = 0; p->Name[i] && pl < 94; ++i) path[pl++] = p->Name[i];
+    path[pl] = 0;
+    auto* iw = reinterpret_cast<u16*>(P + IMG_OFF);
+    for (u32 i = 0; i < pl; ++i) iw[i] = (u16)(u8)path[i];
+    *reinterpret_cast<u16*>(P + 0x60) = (u16)(pl * 2);       // ImagePathName.Length
+    *reinterpret_cast<u16*>(P + 0x62) = (u16)(pl * 2 + 2);
+    *reinterpret_cast<u64*>(P + 0x68) = PARAMS_VA + IMG_OFF; // .Buffer
+    // CommandLine = "<name>"
+    auto* cw = reinterpret_cast<u16*>(P + CMD_OFF);
+    for (u32 i = 0; i < nlen; ++i) cw[i] = (u16)(u8)p->Name[i];
+    *reinterpret_cast<u16*>(P + 0x70) = (u16)(nlen * 2);     // CommandLine.Length
+    *reinterpret_cast<u16*>(P + 0x72) = (u16)(nlen * 2 + 2);
+    *reinterpret_cast<u64*>(P + 0x78) = PARAMS_VA + CMD_OFF; // .Buffer
+    *reinterpret_cast<u64*>(peb + 0x20) = PARAMS_VA;         // PEB.ProcessParameters
+    VMM::MapPageInto(p->Cr3, PARAMS_VA, pphys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
 }
 
 static u64 SetupTeb(KProcess* p, u32 tid, u64 user_stack_top) {

@@ -774,6 +774,17 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                     Debug::Printf("[PEB.Ldr] InLoadOrder module='%s' DllBase=0x%llx\r\n",
                                   nm, dllbase);
                 }
+                // PEB->ProcessParameters->CommandLine (GetCommandLineW source).
+                u64 params = *reinterpret_cast<volatile u64*>(peb_va + 0x20);
+                if (params) {
+                    u16 cl = *reinterpret_cast<volatile u16*>(params + 0x70);
+                    u64 cb = *reinterpret_cast<volatile u64*>(params + 0x78);
+                    char cmd[40]; u32 c = 0;
+                    for (; cb && c < (u32)(cl / 2) && c < 39; ++c)
+                        cmd[c] = (char)*reinterpret_cast<volatile u16*>(cb + c * 2);
+                    cmd[c] = 0;
+                    Debug::Printf("[PEB.Params] CommandLine='%s'\r\n", cmd);
+                }
             }
         } else if (a1 == 1) {
             // Memory stats: provide enough data for visual bar rendering
