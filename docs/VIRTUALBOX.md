@@ -30,10 +30,18 @@ The VM-creation scripts set this to `1920x1080` by default. Verified working
 at 1280x720, 1600x900 and 1920x1080; the mouse range and centered taskbar
 scale to the chosen size automatically.
 
-**Limitation:** live resize while the VM is running (dragging the window to
-reflow the guest) needs a guest GPU driver for the virtual adapter
-(VBoxSVGA/VMSVGA HGSMI), which MicroNT does not implement yet. Set the
-resolution before booting. A VMSVGA driver is a planned milestone.
+When the adapter is `vmsvga`, MicroNT also loads a **VMware SVGA II driver**
+(`kernel/hal/x64/vmsvga.cpp`): it discovers the device on PCI, owns the linear
+framebuffer, sets the mode at runtime (`VMSVGA::SetMode`), and flushes frames
+over the command FIFO (`VMSVGA::Present`). The kernel therefore controls the
+display itself rather than depending on the pre-boot GOP mode; it falls back
+to GOP automatically on hardware without the SVGA II device.
+
+**Limitation:** live resize while the VM runs (dragging the window so the
+guest reflows) still needs the VirtualBox resize-hint path (HGSMI/VBVA: a
+shared area + IRQ that reports the host's preferred size). The SVGA II driver
+is the foundation for that; wiring the resize hint on top is the next step.
+For now set the resolution before booting via the extradata key above.
 
 ## Using the Script
 

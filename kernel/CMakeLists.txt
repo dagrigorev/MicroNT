@@ -45,6 +45,7 @@ set(KERNEL_SOURCES
     hal/x64/vga.cpp
     hal/x64/keyboard.cpp
     hal/x64/mouse.cpp
+    hal/x64/vmsvga.cpp
     hal/x64/interrupts.asm
 
     # Core

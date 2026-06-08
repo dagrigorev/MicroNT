@@ -36,6 +36,7 @@
 #include "../include/shelltray.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
+#include "../include/vmsvga.h"
 #include "../include/winlogon.h"
 #include "../include/windowmgr.h"
 #include "../include/winsta.h"
@@ -89,6 +90,11 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         VGA::SetFramebuffer(boot_info->fb_base,
                             boot_info->fb_width, boot_info->fb_height,
                             boot_info->fb_stride, boot_info->fb_format);
+    }
+    // If the VMware SVGA II adapter is present, take over the display so the
+    // kernel owns the framebuffer and resolution (falls back to GOP if not).
+    if (VMSVGA::Init() && boot_info && boot_info->fb_width) {
+        VMSVGA::SetMode(boot_info->fb_width, boot_info->fb_height);
     }
     VGA::Init();
     //KB::Init();
@@ -1265,8 +1271,16 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         };
         SM::StartInteractiveSession(shell_cfg);
 
+        u64 last_present = 0;
         while (true) {
             SM::PumpInteractiveInput();   // drain PS/2 mouse -> shell hit-testing
+            // Flush the framebuffer to the host ~30 fps when the SVGA driver
+            // owns the display (no-op under bare GOP scanout).
+            u64 now = HAL::PitTicks();
+            if (now - last_present >= 3) {
+                VMSVGA::Present();
+                last_present = now;
+            }
             Sched::Schedule();
         }
     }
