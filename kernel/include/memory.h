@@ -86,6 +86,13 @@ bool HandlePageFault(u64 cr2, u32 error_code);
 // Returns physical address of new PML4, or 0 on failure.
 u64  CreateUserPml4();
 
+// Windows compatibility: split the 2 MB identity huge page covering
+// 0x7FFE0000 (in the shared low page-directory) and map a single 4 KB page
+// there, read-only + user. Because every user PML4 shares this page-directory,
+// the page becomes visible at 0x7FFE0000 in every process at once -- exactly
+// how Windows exposes KUSER_SHARED_DATA. Call once after VMM::Init.
+bool MapSharedUserData(u64 phys);
+
 // Like MapPage but operates on an explicit PML4 (for mapping into a
 // process that is not currently active).  No invlpg needed.
 bool MapPageInto(u64 pml4_phys, u64 virt, u64 phys, u64 flags);

@@ -51,6 +51,7 @@ set(KERNEL_SOURCES
     # Core
     core/debug.cpp
     core/panic.cpp
+    core/shareduserdata.cpp
     core/kernel_main.cpp
 
     # Memory

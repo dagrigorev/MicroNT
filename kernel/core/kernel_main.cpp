@@ -37,6 +37,7 @@
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
 #include "../include/vmsvga.h"
+#include "../include/shareduserdata.h"
 #include "../include/winlogon.h"
 #include "../include/windowmgr.h"
 #include "../include/winsta.h"
@@ -196,6 +197,13 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
                   test_va, test_phys);
         Debug::Print("[MicroNT] M3 ready\r\n");
     }
+
+    // ----------------------------------------------------------
+    // Windows compatibility: KUSER_SHARED_DATA at 0x7FFE0000.
+    // Mapped into the shared low page-directory so every user process
+    // sees it, reporting Windows 11.
+    // ----------------------------------------------------------
+    KUSER::Init();
 
     // ----------------------------------------------------------
     // 7. Object manager (M4: types, handles, namespace)

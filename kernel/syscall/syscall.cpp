@@ -703,7 +703,25 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         char membuf[128] = {};
 
         if (a1 == 0) {
-            str = "MicroNT Version M31\r\n";
+            // Read the OS version from KUSER_SHARED_DATA (0x7FFE0000) in THIS
+            // process's address space -- proving the Windows-compatible shared
+            // page is mapped per-process. Offsets are the documented x64 ones.
+            volatile u32* sud = reinterpret_cast<volatile u32*>(0x7FFE0000ULL);
+            u32 maj = sud[0x26C / 4];
+            u32 min = sud[0x270 / 4];
+            u32 bld = sud[0x274 / 4];
+            char* p = membuf;
+            auto app = [&](const char* s) { while (*s) *p++ = *s++; };
+            auto num = [&](u32 v) {
+                char t[12]; int n = 0;
+                if (!v) t[n++] = '0'; else { while (v) { t[n++] = '0' + v % 10; v /= 10; } }
+                while (n) *p++ = t[--n];
+            };
+            app("MicroNT [Windows ");
+            app((maj == 10 && min == 0) ? "11" : "NT");
+            app("] "); num(maj); *p++ = '.'; num(min); *p++ = '.'; num(bld);
+            app("\r\n"); *p = 0;
+            str = membuf;
         } else if (a1 == 1) {
             // Memory stats: provide enough data for visual bar rendering
             u64 free_pages  = (u64)PMM::FreePages();

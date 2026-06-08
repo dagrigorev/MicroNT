@@ -4,6 +4,7 @@
 #include "../../include/hal.h"
 #include "../../include/debug.h"
 #include "../../include/process.h"
+#include "../../include/shareduserdata.h"
 
 // 8254 port addresses
 constexpr u16 PIT_CHAN0  = 0x40;   // Channel 0 data (read/write)
@@ -24,6 +25,7 @@ static          u32 s_ms_per_tick = 0;  // 1000 / hz (rounded)
 // IRQ0 handler - called from IrqDispatch
 static void TimerHandler(u8 /*irq*/) {
     s_ticks = s_ticks + 1u;  // avoid deprecated volatile increment in C++20
+    KUSER::Tick();                                           // refresh SharedUserData time
     if ((s_ticks % 50)  == 0) VGA::BlinkCursor();            // ~500 ms blink
     if ((s_ticks % 100) == 0) VGA::UpdateStatusBar(s_ticks); // ~1 s uptime tick
     Sched::Tick();
