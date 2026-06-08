@@ -259,6 +259,42 @@ void SwitchAddressSpace(u64 cr3_phys) {
     __asm__ volatile("mov %0, %%cr3" :: "r"(cr3_phys) : "memory");
 }
 
+// Change the protection flags of an already-mapped 4 KB page (keeps the
+// physical frame). Used by NtProtectVirtualMemory. Returns false if unmapped.
+bool ProtectPageInto(u64 pml4_phys, u64 virt, u64 flags) {
+    auto* pml4 = reinterpret_cast<u64*>(pml4_phys);
+    u64 e1 = pml4[pml4_idx(virt)];
+    if (!(e1 & PTE_PRESENT) || (e1 & PTE_PS)) return false;
+    auto* pdpt = reinterpret_cast<u64*>(e1 & PTE_ADDR_MASK);
+    u64 e2 = pdpt[pdpt_idx(virt)];
+    if (!(e2 & PTE_PRESENT) || (e2 & PTE_PS)) return false;
+    auto* pd = reinterpret_cast<u64*>(e2 & PTE_ADDR_MASK);
+    u64 e3 = pd[pd_idx(virt)];
+    if (!(e3 & PTE_PRESENT) || (e3 & PTE_PS)) return false;
+    auto* pt = reinterpret_cast<u64*>(e3 & PTE_ADDR_MASK);
+    u64 pte = pt[pt_idx(virt)];
+    if (!(pte & PTE_PRESENT)) return false;
+    pt[pt_idx(virt)] = (pte & PTE_ADDR_MASK) | (flags | PTE_PRESENT);
+    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
+    return true;
+}
+
+// Return the raw PTE (flags + frame) for a VA, or 0 if not mapped via a 4 KB
+// page. Used by NtQueryVirtualMemory.
+u64 GetPteInto(u64 pml4_phys, u64 virt) {
+    auto* pml4 = reinterpret_cast<u64*>(pml4_phys);
+    u64 e1 = pml4[pml4_idx(virt)];
+    if (!(e1 & PTE_PRESENT) || (e1 & PTE_PS)) return 0;
+    auto* pdpt = reinterpret_cast<u64*>(e1 & PTE_ADDR_MASK);
+    u64 e2 = pdpt[pdpt_idx(virt)];
+    if (!(e2 & PTE_PRESENT) || (e2 & PTE_PS)) return 0;
+    auto* pd = reinterpret_cast<u64*>(e2 & PTE_ADDR_MASK);
+    u64 e3 = pd[pd_idx(virt)];
+    if (!(e3 & PTE_PRESENT) || (e3 & PTE_PS)) return 0;
+    auto* pt = reinterpret_cast<u64*>(e3 & PTE_ADDR_MASK);
+    return pt[pt_idx(virt)];
+}
+
 u64 TranslateInPml4(u64 pml4_phys, u64 virt) {
     // 4-level page walk using explicit PML4 (identity-mapped phys == virt for <4GB)
     auto* pml4 = reinterpret_cast<u64*>(pml4_phys);

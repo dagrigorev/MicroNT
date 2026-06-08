@@ -289,6 +289,27 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // files / DLL image mapping).
     SYSCALL::SelfTestFileSection();
 
+    // Windows compat: verify NtProtectVirtualMemory / NtQueryVirtualMemory
+    // primitives (change a page's protection, read it back, detect free VAs).
+    {
+        u64 cr3 = VMM::CreateUserPml4();
+        u64 va  = 0x650000000ULL;
+        u64 ph  = PMM::AllocPage();
+        if (cr3 && ph) {
+            VMM::MapPageInto(cr3, va, ph,
+                             VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+            bool rw_before = (VMM::GetPteInto(cr3, va) & VMM::PTE_WRITABLE) != 0;
+            VMM::ProtectPageInto(cr3, va, VMM::PTE_USER);   // -> read-only
+            u64 after = VMM::GetPteInto(cr3, va);
+            bool ro_after = (after & VMM::PTE_PRESENT) && !(after & VMM::PTE_WRITABLE);
+            bool free_ok  = VMM::GetPteInto(cr3, 0x999000000ULL) == 0;
+            Debug::Printf("[VMTEST] protect rw->ro=%s query_free=%s -> %s\r\n",
+                          (rw_before && ro_after) ? "ok" : "BAD",
+                          free_ok ? "ok" : "BAD",
+                          (rw_before && ro_after && free_ok) ? "PASS" : "FAIL");
+        }
+    }
+
     REGISTRY::Init();
     KASSERT(REGISTRY::LoadSystemHive());
     CSRSS::Init();

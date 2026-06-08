@@ -83,6 +83,8 @@ constexpr u64 NT_QUERY_THREAD_INFO  = 35;  // NtQueryInformationThread
 constexpr u64 NT_QUERY_SYSTEM_TIME  = 36;  // NtQuerySystemTime
 constexpr u64 NT_QUERY_PERF_COUNTER = 37;  // NtQueryPerformanceCounter
 constexpr u64 NT_CREATE_FILE_SECTION = 38; // NtCreateSection over a VFS file
+constexpr u64 NT_PROTECT_VM          = 39; // NtProtectVirtualMemory
+constexpr u64 NT_QUERY_VM            = 40; // NtQueryVirtualMemory
 
 // M30: writable files delegated to VFS::WNode table.
 // Handle range 0x40-0x4F maps to VFS WNode indices 0-15.
@@ -177,6 +179,10 @@ static bool WriteUserByte(u64 pml4, u64 user_va, u8 val) {
 // Write a little-endian u64 to user memory via explicit PML4 walk.
 static void WriteUserU64(u64 pml4, u64 user_va, u64 v) {
     for (int i = 0; i < 8; ++i) WriteUserByte(pml4, user_va + i, (u8)(v >> (i * 8)));
+}
+
+static void WriteUserU32(u64 pml4, u64 user_va, u32 v) {
+    for (int i = 0; i < 4; ++i) WriteUserByte(pml4, user_va + i, (u8)(v >> (i * 8)));
 }
 
 // Read up to 'len' bytes from user virtual address into kernel buffer.
@@ -913,6 +919,41 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         if (!t || !t->Process || !a1) return STATUS_UNSUCCESSFUL;
         WriteUserU64(t->Process->Cr3, a1, (u64)HAL::PitTicks());
         if (a2) WriteUserU64(t->Process->Cr3, a2, 100ULL);   // PIT = 100 Hz
+        return STATUS_SUCCESS;
+    }
+
+    case NT_PROTECT_VM: {
+        // NtProtectVirtualMemory. a1=base, a2=size, a3=Win32 PAGE_* protection.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return STATUS_UNSUCCESSFUL;
+        u64 base = a1 & ~0xFFFULL;
+        usize span = (usize)((a2 + (a1 & 0xFFF) + PAGE_SIZE - 1) / PAGE_SIZE);
+        if (!span) span = 1;
+        u64 flags = VMM::PTE_PRESENT | VMM::PTE_USER;
+        if (a3 & 0xCC) flags |= VMM::PTE_WRITABLE;   // RW/WRITECOPY/EXEC_RW/EXEC_WRITECOPY
+        for (usize i = 0; i < span; ++i)
+            VMM::ProtectPageInto(t->Process->Cr3, base + i * PAGE_SIZE, flags);
+        return STATUS_SUCCESS;
+    }
+
+    case NT_QUERY_VM: {
+        // NtQueryVirtualMemory -> MEMORY_BASIC_INFORMATION (x64). a1=addr, a2=buf.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process || !a2) return STATUS_UNSUCCESSFUL;
+        u64 pml4 = t->Process->Cr3;
+        u64 va  = a1 & ~0xFFFULL;
+        u64 pte = VMM::GetPteInto(pml4, va);
+        for (u32 i = 0; i < 48; ++i) WriteUserByte(pml4, a2 + i, 0);
+        WriteUserU64(pml4, a2 + 0x00, va);             // BaseAddress
+        WriteUserU64(pml4, a2 + 0x18, PAGE_SIZE);      // RegionSize
+        if (pte & VMM::PTE_PRESENT) {
+            WriteUserU64(pml4, a2 + 0x08, va);         // AllocationBase
+            WriteUserU32(pml4, a2 + 0x20, 0x1000);     // State = MEM_COMMIT
+            WriteUserU32(pml4, a2 + 0x24, (pte & VMM::PTE_WRITABLE) ? 0x04u : 0x02u); // PAGE_READWRITE/READONLY
+            WriteUserU32(pml4, a2 + 0x28, 0x20000);    // Type = MEM_PRIVATE
+        } else {
+            WriteUserU32(pml4, a2 + 0x20, 0x10000);    // State = MEM_FREE
+        }
         return STATUS_SUCCESS;
     }
 

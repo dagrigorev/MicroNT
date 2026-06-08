@@ -100,6 +100,11 @@ bool MapPageInto(u64 pml4_phys, u64 virt, u64 phys, u64 flags);
 // Switch the active address space (write CR3).
 void SwitchAddressSpace(u64 cr3_phys);
 
+// Change protection flags of a mapped 4 KB page (NtProtectVirtualMemory).
+bool ProtectPageInto(u64 pml4_phys, u64 virt, u64 flags);
+// Return the raw PTE for a VA (NtQueryVirtualMemory), or 0 if unmapped.
+u64  GetPteInto(u64 pml4_phys, u64 virt);
+
 // Walk an explicit PML4 to translate virtual -> physical.
 // Returns 0 if the page is not mapped or is a huge page (>4KB).
 u64  TranslateInPml4(u64 pml4_phys, u64 virt);
