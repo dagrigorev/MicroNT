@@ -4,6 +4,7 @@
 #include "../../include/ntdef.h"
 #include "../../include/bootinfo.h"
 #include "../../include/hal.h"
+#include "../../include/desktop_icons.h"
 
 namespace VGA {
 
@@ -401,20 +402,126 @@ static void DrawAppTile(u32 x, u32 y, u32 size, u32 badge, char letter,
     DrawTextAbs(x + size / 2 - 4, y + size / 2 - 8, s, 0xFFFFFF, badge);
 }
 
-static void DrawDesktopIcon(u32 x, u32 y, const char* label, u32 body, u32 shade) {
-    FillVerticalGradient(x + 17, y + 7, 42, 42, 0xFFFFFF, body);
-    FillRect(x + 23, y + 13, 30, 21, shade);
-    RectOutline(x + 17, y + 7, 42, 42, 0xFFFFFF, 0x375E9B);
-    FillRect(x + 4, y + 56, 72, 16, 0x247DD8);
-    DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
+// --- Alpha compositing + rounded shapes (for SVG-derived desktop icons) ---
+
+// Native framebuffer pixel -> 0xRRGGBB (inverse of ToPixel).
+static u32 FromPixel(u32 px) {
+    if (s_fb_bgr) {
+        u32 b = px & 0xFF, g = (px >> 8) & 0xFF, r = (px >> 16) & 0xFF;
+        return (r << 16) | (g << 8) | b;
+    }
+    u32 r = px & 0xFF, g = (px >> 8) & 0xFF, b = (px >> 16) & 0xFF;
+    return (r << 16) | (g << 8) | b;
 }
 
-static void DrawFolderIcon(u32 x, u32 y, const char* label) {
-    FillRect(x + 18, y + 15, 38, 30, 0xFFC229);
-    FillRect(x + 22, y + 8, 20, 9, 0xFFE27A);
-    RectOutline(x + 18, y + 15, 38, 30, 0xFFF2A2, 0xDC8611);
-    FillRect(x + 4, y + 56, 72, 16, 0x247DD8);
-    DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
+static u32 Isqrt(u32 v) {
+    u32 r = 0;
+    while ((r + 1) * (r + 1) <= v) ++r;
+    return r;
+}
+
+// Blend rgb toward white by t/255.
+static u32 Lighten(u32 rgb, u32 t) {
+    u32 r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+    r += ((255 - r) * t) / 255;
+    g += ((255 - g) * t) / 255;
+    b += ((255 - b) * t) / 255;
+    return (r << 16) | (g << 8) | b;
+}
+
+static void FillRoundRect(u32 x, u32 y, u32 w, u32 h, u32 r, u32 rgb) {
+    if (w == 0 || h == 0) return;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    for (u32 row = 0; row < h; ++row) {
+        u32 inset = 0;
+        if (row < r) {
+            u32 dy = r - row;
+            inset = r - Isqrt(r * r - dy * dy);
+        } else if (row >= h - r) {
+            u32 dy = row - (h - r) + 1;
+            inset = r - Isqrt(r * r - dy * dy);
+        }
+        FillRect(x + inset, y + row, w - 2 * inset, 1, rgb);
+    }
+}
+
+// Composite an 8-bit coverage mask onto the framebuffer in color rgb.
+static void BlitGlyphAlpha(u32 x, u32 y, const unsigned char* a,
+                           u32 gw, u32 gh, u32 rgb) {
+    if (!s_fb || !a) return;
+    u32 sr = (rgb >> 16) & 0xFF, sg = (rgb >> 8) & 0xFF, sb = rgb & 0xFF;
+    for (u32 j = 0; j < gh; ++j) {
+        if (y + j >= s_fb_h) break;
+        for (u32 i = 0; i < gw; ++i) {
+            if (x + i >= s_fb_w) continue;
+            u8 al = a[j * gw + i];
+            if (!al) continue;
+            u32* p = &s_fb[(y + j) * s_fb_stride + (x + i)];
+            if (al == 255) { *p = ToPixel(rgb); continue; }
+            u32 d = FromPixel(*p);
+            u32 dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+            u32 rr = (sr * al + dr * (255 - al)) / 255;
+            u32 gg = (sg * al + dg * (255 - al)) / 255;
+            u32 bb = (sb * al + db * (255 - al)) / 255;
+            *p = ToPixel((rr << 16) | (gg << 8) | bb);
+        }
+    }
+}
+
+// Transparent (no background box) text -- for labels over the wallpaper.
+static void DrawGlyphTransparent(u32 px, u32 py, u8 ch, u32 fg) {
+    if (!s_fb) return;
+    const u8* g = &s_font[(u32)ch * 16];
+    u32 c = ToPixel(fg);
+    for (u32 r = 0; r < CHAR_H; ++r) {
+        if (py + r >= s_fb_h) break;
+        u32* line = s_fb + (py + r) * s_fb_stride + px;
+        u8 bits = g[r];
+        for (u32 cc = 0; cc < CHAR_W; ++cc)
+            if ((bits & (0x80u >> cc)) && px + cc < s_fb_w) line[cc] = c;
+    }
+}
+
+static void DrawTextTransparent(u32 x, u32 y, const char* s, u32 fg) {
+    for (u32 i = 0; s && s[i]; ++i)
+        DrawGlyphTransparent(x + i * CHAR_W, y, (u8)s[i], fg);
+}
+
+// XP-gloss tile + Windows 11 Fluent glyph + floating label. Slot is 96 wide.
+static const u32 s_icon_tile[6] = {
+    0x2F6FD0,  // Computer  - blue
+    0xF2B431,  // Folder    - amber
+    0x16A085,  // Network   - teal
+    0xE0552B,  // Media     - orange
+    0x5B6CC4,  // Control   - indigo
+    0x8AA0B4,  // Recycle   - slate
+};
+
+static void DrawShellIcon(u32 x, u32 y, u32 kind, const char* label) {
+    if (kind >= 6) kind = 0;
+    u32 tile = s_icon_tile[kind];
+    u32 tw = 60, th = 60;
+    u32 tx = x + (96 - tw) / 2;
+    u32 ty = y + 2;
+
+    FillRoundRect(tx + 2, ty + 4, tw, th, 13, 0x12243C);            // drop shadow
+    FillRoundRect(tx, ty, tw, th, 13, tile);                        // tile body
+    FillRoundRect(tx + 3, ty + 3, tw - 6, (th * 44) / 100, 10,
+                  Lighten(tile, 90));                               // XP gloss sheen
+
+    const unsigned char* a = DESKTOP_ICON_ALPHA[kind];
+    u32 gx = tx + (tw - DESKTOP_ICON_W) / 2;
+    u32 gy = ty + (th - DESKTOP_ICON_H) / 2;
+    BlitGlyphAlpha(gx, gy, a, DESKTOP_ICON_W, DESKTOP_ICON_H, 0xFFFFFF);
+
+    u32 len = 0;
+    while (label && label[len]) ++len;
+    u32 text_w = len * CHAR_W;
+    u32 lx = text_w < 96 ? x + (96 - text_w) / 2 : x;
+    u32 ly = y + 68;
+    DrawTextTransparent(lx + 1, ly + 1, label, 0x0A1A30);          // shadow
+    DrawTextTransparent(lx, ly, label, 0xFFFFFF);
 }
 
 // Flat Windows 11 control glyphs (minimize / maximize / close) on a light
@@ -719,29 +826,9 @@ void StartDesktop(const UXTHEME::Theme& theme,
 
     u32 icon_x = 18, icon_y = 14;
     for (u32 i = 0; i < layout.IconCount; ++i) {
-        u32 y = icon_y + i * 82;
+        u32 y = icon_y + i * 92;
         const DESKTOPMODEL::DesktopIcon& icon = layout.Icons[i];
-        switch (icon.Kind) {
-        case DESKTOPMODEL::IconKind::Folder:
-            DrawFolderIcon(icon_x, y, icon.Label);
-            break;
-        case DESKTOPMODEL::IconKind::Network:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0x0C8BE8, 0x07418D);
-            break;
-        case DESKTOPMODEL::IconKind::Media:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0xFF6D14, 0xFFBD4A);
-            break;
-        case DESKTOPMODEL::IconKind::Control:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0x46A8FF, 0x1A55B7);
-            break;
-        case DESKTOPMODEL::IconKind::Recycle:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0xADC4D7, 0x6E8297);
-            break;
-        case DESKTOPMODEL::IconKind::Computer:
-        default:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0x439AFF, 0x12356B);
-            break;
-        }
+        DrawShellIcon(icon_x, y, (u32)icon.Kind, icon.Label);
     }
 
     for (u32 i = 0; i < layout.WindowCount; ++i) {

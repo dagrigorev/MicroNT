@@ -78,8 +78,8 @@ static void ResolveHitTarget(PointerState& pointer,
 
     for (u32 i = 0; i < layout.IconCount; ++i) {
         u32 icon_x = 18;
-        u32 icon_y = 14 + i * 82;
-        if (InRect(pointer.X, pointer.Y, icon_x, icon_y, 96, 72)) {
+        u32 icon_y = 14 + i * 92;
+        if (InRect(pointer.X, pointer.Y, icon_x, icon_y, 96, 84)) {
             pointer.HotTarget = HitTargetKind::DesktopIcon;
             pointer.TargetIndex = i;
             return;
