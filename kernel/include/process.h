@@ -74,6 +74,10 @@ struct KThread {
 
     // M15: exception handler VA (0 = none)
     u64         ExceptionHandler;
+
+    // Windows compat: per-thread TEB virtual address (0 = none/kernel thread).
+    // Loaded into the user GS base when this thread is scheduled.
+    u64         TebVa;
 };
 
 // ============================================================
@@ -94,6 +98,11 @@ struct KProcess {
     u32         thread_count;
     bool        exited;
     KThread*    exit_waiters;       // threads waiting for this process to exit
+
+    // Windows compat: PEB virtual address (0 = none) and the next TEB VA to
+    // hand out for threads of this process.
+    u64         PebVa;
+    u64         NextTebVa;
 };
 
 // ============================================================

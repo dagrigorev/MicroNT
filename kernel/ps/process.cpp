@@ -63,6 +63,53 @@ static void StackPoke(u64 top, u32 slot, u64 value) {
     *p = value;
 }
 
+// ============================================================
+// Windows process environment: PEB / TEB
+//
+// VAs sit at ~8 TB, far above the 0-4 GB identity huge-page region and any
+// existing user mappings, so they map cleanly with 4 KB pages. Field offsets
+// follow the documented x64 PEB/TEB layout.
+// ============================================================
+constexpr u64 PEB_VA   = 0x7FFFE000000ULL;
+constexpr u64 TEB_BASE = 0x7FFFE100000ULL;
+
+// Reported OS identity (Windows 11 24H2) -- matches KUSER_SHARED_DATA.
+constexpr u32 OS_MAJOR = 10, OS_MINOR = 0, OS_BUILD = 26100;
+
+static void SetupPeb(KProcess* p) {
+    if (!p || !p->Cr3) return;
+    u64 phys = PMM::AllocPage();
+    if (!phys) return;
+    auto* peb = reinterpret_cast<u8*>(phys);   // identity-mapped (< RAM)
+    for (u32 i = 0; i < PAGE_SIZE; ++i) peb[i] = 0;
+    *reinterpret_cast<u32*>(peb + 0x118) = OS_MAJOR;   // OSMajorVersion
+    *reinterpret_cast<u32*>(peb + 0x11C) = OS_MINOR;   // OSMinorVersion
+    *reinterpret_cast<u16*>(peb + 0x120) = (u16)OS_BUILD;  // OSBuildNumber
+    *reinterpret_cast<u32*>(peb + 0x124) = 2;          // OSPlatformId = VER_PLATFORM_WIN32_NT
+    p->PebVa = PEB_VA;
+    p->NextTebVa = TEB_BASE;
+    VMM::MapPageInto(p->Cr3, PEB_VA, phys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+}
+
+static u64 SetupTeb(KProcess* p, u32 tid, u64 user_stack_top) {
+    if (!p || !p->Cr3 || !p->PebVa) return 0;
+    u64 teb_va = p->NextTebVa;
+    p->NextTebVa += 0x2000;   // one page + guard slot
+    u64 phys = PMM::AllocPage();
+    if (!phys) return 0;
+    auto* teb = reinterpret_cast<u8*>(phys);
+    for (u32 i = 0; i < PAGE_SIZE; ++i) teb[i] = 0;
+    *reinterpret_cast<u64*>(teb + 0x08) = user_stack_top;   // NT_TIB.StackBase
+    *reinterpret_cast<u64*>(teb + 0x30) = teb_va;           // NT_TIB.Self
+    *reinterpret_cast<u64*>(teb + 0x40) = p->Pid;           // ClientId.UniqueProcess
+    *reinterpret_cast<u64*>(teb + 0x48) = tid;              // ClientId.UniqueThread
+    *reinterpret_cast<u64*>(teb + 0x60) = p->PebVa;         // ProcessEnvironmentBlock
+    VMM::MapPageInto(p->Cr3, teb_va, phys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+    return teb_va;
+}
+
 } // anonymous namespace
 
 // ============================================================
@@ -128,6 +175,7 @@ KProcess* CreateProcess(const char* name, u64 cr3) {
     p->UserHeapCursor = 0x500000000ULL;  // each process starts its own heap here
     if (name) for (int i = 0; i < 31 && name[i]; ++i) p->Name[i] = name[i];
     if (s_proc_count < 32) s_proc_reg[s_proc_count++] = p; // M19 registry
+    SetupPeb(p);   // Windows compat: per-process PEB at 0x7FFFE000000
     return p;
 }
 
@@ -234,8 +282,11 @@ KThread* CreateUserThread(KProcess* process, const char* name,
     t->Prev            = nullptr;
     if (name) for (int i = 0; i < 31 && name[i]; ++i) t->Name[i] = name[i];
 
-    KDBG_TRACE("PS: CreateUserThread '%s' TID=%u entry=0x%llx user_rsp=0x%llx",
-               t->Name, t->Tid, user_entry_va, user_stack_va);
+    // Windows compat: give the thread a TEB (GS base) linked to the PEB.
+    t->TebVa = SetupTeb(t->Process, t->Tid, user_stack_va);
+
+    KDBG_TRACE("PS: CreateUserThread '%s' TID=%u entry=0x%llx user_rsp=0x%llx teb=0x%llx",
+               t->Name, t->Tid, user_entry_va, user_stack_va, t->TebVa);
     // M32: register in global thread table for kill-by-PID
     if (s_thread_count < 64) s_thread_reg[s_thread_count++] = t;
     return t;

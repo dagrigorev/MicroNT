@@ -722,6 +722,22 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             app("] "); num(maj); *p++ = '.'; num(min); *p++ = '.'; num(bld);
             app("\r\n"); *p = 0;
             str = membuf;
+
+            // End-to-end check: this syscall runs with the calling user
+            // thread's GS base (no SWAPGS), so GS:[0x30]=TEB.Self and
+            // GS:[0x60]=PEB. Read the PEB's OSBuildNumber back through GS to
+            // prove the TEB/PEB/GS chain is live for a real user thread.
+            u64 gsbase = HAL::ReadMsr(0xC0000101);
+            if (gsbase) {
+                u64 teb_self = 0, peb_ptr = 0;
+                __asm__ volatile("movq %%gs:0x30, %0" : "=r"(teb_self));
+                __asm__ volatile("movq %%gs:0x60, %0" : "=r"(peb_ptr));
+                u32 peb_build = peb_ptr
+                    ? *reinterpret_cast<volatile u16*>(peb_ptr + 0x120) : 0;
+                Debug::Printf("[TEB/PEB] gs=0x%llx TEB.Self=0x%llx PEB=0x%llx "
+                              "OSBuild=%u\r\n",
+                              gsbase, teb_self, peb_ptr, peb_build);
+            }
         } else if (a1 == 1) {
             // Memory stats: provide enough data for visual bar rendering
             u64 free_pages  = (u64)PMM::FreePages();
