@@ -55,6 +55,8 @@
 #include "../ldr/hello9_pe.h"
 #include "../ldr/hello10_pe.h"
 #include "../ldr/wintest_pe.h"
+#include "../ldr/kernel32_pe.h"
+#include "../ldr/win32test_pe.h"
 
 
 
@@ -741,8 +743,10 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         KASSERT(uthread);
         Sched::AddThread(uthread);
 
-        while (!g_m8_write_ok) { Sched::Schedule(); }
-        KASSERT(g_m11_heap_ok);
+        // Wait on M11's own completion signal, not the shared write flag --
+        // a late write from the previous milestone's process could otherwise
+        // satisfy g_m8_write_ok before hello4 runs its heap test.
+        while (!g_m11_heap_ok) { Sched::Schedule(); }
         Debug::Print("[MicroNT] M11 ready\r\n");
     }
 
@@ -1361,6 +1365,45 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
         while (!g_m8_write_ok) { Sched::Schedule(); }
         Debug::Print("[MicroNT] WINPE ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // WIN32: load a compiled kernel32.dll and an EXE that imports it. The
+    // loader resolves the EXE's imports against kernel32's export table;
+    // kernel32's WriteFile/ExitProcess wrap NT syscalls. This is a real
+    // Win32 import chain (EXE -> kernel32 -> NT).
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        u64 cr3 = VMM::CreateUserPml4();
+        KASSERT(cr3);
+        KProcess* proc = PS::CreateProcess("win32test.exe", cr3);
+        KASSERT(proc);
+
+        u64 k32_entry = 0;
+        NTSTATUS st = LDR::LoadAndRegister("kernel32.dll",
+            s_kernel32_pe, s_kernel32_pe_size, cr3, s_kernel32_image_base, &k32_entry);
+        KASSERT(NT_SUCCESS(st));
+
+        u64 entry_va = 0;
+        st = LDR::LoadPe(s_win32test_pe, s_win32test_pe_size,
+                         cr3, s_win32test_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        constexpr u64 STK_VA = 0x142000000ULL;
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) reinterpret_cast<u8*>(stk_phys)[i] = 0;
+        KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+
+        KThread* th = PS::CreateUserThread(proc, "win32test.exe!Entry",
+                                           entry_va, STK_VA + PAGE_SIZE);
+        KASSERT(th);
+        Sched::AddThread(th);
+
+        while (!g_m8_write_ok) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] WIN32 ready\r\n");
     }
 
     // ----------------------------------------------------------

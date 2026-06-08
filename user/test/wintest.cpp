@@ -15,7 +15,7 @@ static inline i64 nt_syscall(i64 n, i64 a1, i64 a2, i64 a3) {
     __asm__ volatile("syscall"
                      : "=a"(r)
                      : "a"(n), "D"(a1), "S"(a2), "d"(a3)
-                     : "rcx", "r11", "memory");
+                     : "rcx", "r11", "r8", "r9", "r10", "memory");
     return r;
 }
 

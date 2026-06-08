@@ -43,13 +43,19 @@ struct Module {
     const u8* pe_data;
     usize    pe_size;
 };
-constexpr usize MAX_MODULES = 16;
+constexpr usize MAX_MODULES = 64;   // headroom: ntdll is re-registered per process
 static Module   s_mods[MAX_MODULES];
 static u32      s_mod_count = 0;
 
 static void RegisterModule(const char* name, u64 base,
                             const u8* data, usize size) {
-    if (s_mod_count >= MAX_MODULES) return;
+    // Append-only (matches the original loader). The same DLL is re-registered
+    // once per process; FindModule returns the first match. MAX_MODULES has
+    // enough headroom for every ntdll load plus kernel32.
+    if (s_mod_count >= MAX_MODULES) {
+        KDBG_ERROR("LDR: module registry full, dropping '%s'", name);
+        return;
+    }
     auto& m = s_mods[s_mod_count++];
     usize n = strlen_s(name);
     if (n >= 32) n = 31;

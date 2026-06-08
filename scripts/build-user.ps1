@@ -60,7 +60,49 @@ function Build-UserPe($src, $name, $sub, $entry) {
     Write-Host "[OK] $hdr" -ForegroundColor Green
 }
 
+# Compile a freestanding DLL, producing an import library for EXEs to link.
+function Build-UserDll($src, $name) {
+    $srcPath = Join-Path $Root $src
+    $obj = Join-Path $Build "$name.obj"
+    # Output extension must be .dll: lld-link records this filename as the
+    # import-library DLL name, which is what importing EXEs reference.
+    $dll = Join-Path $Build "$name.dll"
+    $lib = Join-Path $Build "$name.lib"
+    $hdr = Join-Path $LdrDir "${name}_pe.h"
+    Write-Host "=== $name.dll ($src) ===" -ForegroundColor Cyan
+    & $clangpp '--target=x86_64-unknown-windows' '-ffreestanding' '-fno-stack-protector' `
+        '-mno-red-zone' '-nostdlib' '-fno-exceptions' '-fno-rtti' '-std=c++20' '-Os' `
+        '-fno-builtin' '-c' $srcPath '-o' $obj
+    if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] compile $name failed" -ForegroundColor Red; exit 1 }
+    & $lldlink '/dll' '/noentry' '/nodefaultlib' '/fixed' '/align:4096' '/filealign:512' `
+        "/implib:$lib" "/out:$dll" $obj
+    if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] link $name.dll failed" -ForegroundColor Red; exit 1 }
+    & $python.Source (Join-Path $Root 'tools\pe2h.py') $dll $name $hdr
+    Write-Host "[OK] $hdr" -ForegroundColor Green
+}
+
+# Compile a freestanding EXE that links against import libraries ($libs).
+function Build-UserExe($src, $name, $entry, $libs) {
+    $srcPath = Join-Path $Root $src
+    $obj = Join-Path $Build "$name.obj"
+    $exe = Join-Path $Build "$name.pe"
+    $hdr = Join-Path $LdrDir "${name}_pe.h"
+    Write-Host "=== $name.exe ($src) ===" -ForegroundColor Cyan
+    & $clangpp '--target=x86_64-unknown-windows' '-ffreestanding' '-fno-stack-protector' `
+        '-mno-red-zone' '-nostdlib' '-fno-exceptions' '-fno-rtti' '-std=c++20' '-Os' `
+        '-fno-builtin' '-c' $srcPath '-o' $obj
+    if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] compile $name failed" -ForegroundColor Red; exit 1 }
+    $args = @('/nodefaultlib', '/subsystem:console', "/entry:$entry", '/fixed',
+              '/align:4096', '/filealign:512', "/out:$exe", $obj) + $libs
+    & $lldlink @args
+    if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] link $name.exe failed" -ForegroundColor Red; exit 1 }
+    & $python.Source (Join-Path $Root 'tools\pe2h.py') $exe $name $hdr
+    Write-Host "[OK] $hdr" -ForegroundColor Green
+}
+
 Write-Host "`n=== MicroNT user-mode PE build ===" -ForegroundColor Cyan
 Build-UserPe 'user\test\wintest.cpp' 'wintest' 'console' 'Entry'
+Build-UserDll 'user\kernel32\kernel32.cpp' 'kernel32'
+Build-UserExe 'user\test\win32test.cpp' 'win32test' 'Entry' @((Join-Path $Build 'kernel32.lib'))
 
 Write-Host "`n[SUCCESS] user PE blobs generated." -ForegroundColor Green
