@@ -183,5 +183,6 @@ namespace MOUSE {
     void Init();
     bool IsReady();
     bool TryRead(Packet* out);
+    bool CurrentPosition(i32* x, i32* y);  // latest absolute cursor position
     void HandleIrq(u8 irq);
 }

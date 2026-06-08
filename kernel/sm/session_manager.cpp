@@ -8,6 +8,7 @@
 #include "../include/displaycfg.h"
 #include "../include/dwm.h"
 #include "../include/explorer.h"
+#include "../include/hal.h"
 #include "../include/inputhost.h"
 #include "../include/process.h"
 #include "../include/profile.h"
@@ -286,6 +287,62 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     KASSERT(ShellNotificationsStart(session));
     KASSERT(EXPLORER::StartShellThread(s_shell));
     return &session;
+}
+
+// Re-publish shell models and repaint after the Start menu open state changes.
+static void ToggleStartMenu() {
+    bool open = !s_desktop_layout.StartMenuOpen;
+    s_desktop_layout.StartMenuOpen = open;
+    s_activation_state.StartMenuOpen = open;
+    s_start_menu.Open = open;
+    Debug::Printf("[SMSS] Session %u Start menu %s\r\n",
+                  s_interactive.SessionId, open ? "opened" : "closed");
+
+    // Repaint the desktop so the menu shows/hides, then restore the cursor at
+    // the logical pointer position (StartDesktop parks it at a default spot).
+    DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene,
+                             s_display_target, s_desktop_layout, s_theme);
+    VGA::MoveMouseCursor(s_pointer_state.X, s_pointer_state.Y);
+}
+
+static void HandleShellClick(SHELLINPUT::HitTargetKind target, u32 index) {
+    switch (target) {
+    case SHELLINPUT::HitTargetKind::StartButton:
+        ToggleStartMenu();
+        break;
+    case SHELLINPUT::HitTargetKind::StartMenu:
+        Debug::Printf("[SMSS] Session %u Start menu item %u activated\r\n",
+                      s_interactive.SessionId, index);
+        break;
+    case SHELLINPUT::HitTargetKind::DesktopIcon:
+        Debug::Printf("[SMSS] Session %u desktop icon %u activated\r\n",
+                      s_interactive.SessionId, index);
+        break;
+    case SHELLINPUT::HitTargetKind::Taskbar:
+        Debug::Printf("[SMSS] Session %u taskbar button %u activated\r\n",
+                      s_interactive.SessionId, index);
+        break;
+    default:
+        break;
+    }
+}
+
+void PumpInteractiveInput() {
+    if (!s_pointer_state.HitTestingReady || !s_desktop_layout.Ready) return;
+
+    MOUSE::Packet packet{};
+    while (MOUSE::TryRead(&packet)) {
+        i32 mx = 0, my = 0;
+        if (!MOUSE::CurrentPosition(&mx, &my)) break;
+
+        SHELLINPUT::PointerEvent event = SHELLINPUT::ProcessPointer(
+            s_pointer_state, s_desktop_layout,
+            static_cast<u32>(mx), static_cast<u32>(my), packet.Left);
+
+        if (event.Clicked) {
+            HandleShellClick(event.Target, event.TargetIndex);
+        }
+    }
 }
 
 } // namespace SM

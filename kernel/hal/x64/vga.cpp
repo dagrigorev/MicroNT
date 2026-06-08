@@ -741,35 +741,39 @@ void StartDesktop(const UXTHEME::Theme& theme,
         DrawPanelWindow(x, y, w, h, win.Title, win.Toolbar, win.Status);
     }
 
-    u32 menu_w = s_fb_w >= 900 ? 345 : 300;
-    u32 menu_h = s_fb_h >= 700 ? 420 : 330;
-    u32 menu_y = task_y > menu_h ? task_y - menu_h : 0;
-    FillRect(8 + 8, menu_y + 12, menu_w, menu_h, 0x1C3765);
-    FillRect(8, menu_y, menu_w, menu_h, 0xFFFFFF);
-    RectOutline(8, menu_y, menu_w, menu_h, 0x7DB7FF, 0x0C5BB9);
-    FillVerticalGradient(9, menu_y + 1, menu_w - 2, 64, 0x1679D8, 0x0056BA);
-    DrawFlag(24, menu_y + 18, 1);
-    DrawTextAbs(58, menu_y + 24, "MicroNT", 0xFFFFFF, 0x0A62C0);
-    FillRect(9, menu_y + 65, (menu_w * 53) / 100, menu_h - 103, 0xFFFFFF);
-    FillVerticalGradient(9 + (menu_w * 53) / 100, menu_y + 65,
-                         menu_w - (menu_w * 53) / 100 - 2, menu_h - 103,
-                         0xD9EDFF, 0x79B6ED);
-    const char* left[] = { "Internet", "E-mail", "Media Player", "Documents",
-                           "Control Panel", "Help and Support", "Search", "Run..." };
-    for (u32 i = 0; i < 8; ++i) {
-        u32 yy = menu_y + 78 + i * 34;
-        if (i == 3) FillRect(16, yy - 5, (menu_w * 53) / 100 - 20, 28, 0xE5F2FF);
-        DrawTextAbs(28, yy, left[i], 0x12395E, i == 3 ? 0xE5F2FF : 0xFFFFFF);
+    // The Start menu is only painted while it is open (toggled by the live
+    // pointer hit-testing in the session manager).
+    if (layout.StartMenuOpen) {
+        u32 menu_w = s_fb_w >= 900 ? 345 : 300;
+        u32 menu_h = s_fb_h >= 700 ? 420 : 330;
+        u32 menu_y = task_y > menu_h ? task_y - menu_h : 0;
+        FillRect(8 + 8, menu_y + 12, menu_w, menu_h, 0x1C3765);
+        FillRect(8, menu_y, menu_w, menu_h, 0xFFFFFF);
+        RectOutline(8, menu_y, menu_w, menu_h, 0x7DB7FF, 0x0C5BB9);
+        FillVerticalGradient(9, menu_y + 1, menu_w - 2, 64, 0x1679D8, 0x0056BA);
+        DrawFlag(24, menu_y + 18, 1);
+        DrawTextAbs(58, menu_y + 24, "MicroNT", 0xFFFFFF, 0x0A62C0);
+        FillRect(9, menu_y + 65, (menu_w * 53) / 100, menu_h - 103, 0xFFFFFF);
+        FillVerticalGradient(9 + (menu_w * 53) / 100, menu_y + 65,
+                             menu_w - (menu_w * 53) / 100 - 2, menu_h - 103,
+                             0xD9EDFF, 0x79B6ED);
+        const char* left[] = { "Internet", "E-mail", "Media Player", "Documents",
+                               "Control Panel", "Help and Support", "Search", "Run..." };
+        for (u32 i = 0; i < 8; ++i) {
+            u32 yy = menu_y + 78 + i * 34;
+            if (i == 3) FillRect(16, yy - 5, (menu_w * 53) / 100 - 20, 28, 0xE5F2FF);
+            DrawTextAbs(28, yy, left[i], 0x12395E, i == 3 ? 0xE5F2FF : 0xFFFFFF);
+        }
+        const char* right[] = { "Admin", "My Documents", "My Pictures", "My Music",
+                                "My Computer", "Control Panel", "Devices", "Defaults" };
+        for (u32 i = 0; i < 8; ++i) {
+            u32 rx = 24 + (menu_w * 53) / 100;
+            DrawTextAbs(rx, menu_y + 80 + i * 32, right[i], 0x12395E, 0xB8D9F6);
+        }
+        FillVerticalGradient(9, menu_y + menu_h - 38, menu_w - 2, 37, 0x1D76D2, 0x064FA8);
+        DrawTextAbs(190, menu_y + menu_h - 25, "Log Off", 0xFFFFFF, 0x0F61B8);
+        DrawTextAbs(254, menu_y + menu_h - 25, "Turn Off", 0xFFFFFF, 0x0F61B8);
     }
-    const char* right[] = { "Admin", "My Documents", "My Pictures", "My Music",
-                            "My Computer", "Control Panel", "Devices", "Defaults" };
-    for (u32 i = 0; i < 8; ++i) {
-        u32 rx = 24 + (menu_w * 53) / 100;
-        DrawTextAbs(rx, menu_y + 80 + i * 32, right[i], 0x12395E, 0xB8D9F6);
-    }
-    FillVerticalGradient(9, menu_y + menu_h - 38, menu_w - 2, 37, 0x1D76D2, 0x064FA8);
-    DrawTextAbs(190, menu_y + menu_h - 25, "Log Off", 0xFFFFFF, 0x0F61B8);
-    DrawTextAbs(254, menu_y + menu_h - 25, "Turn Off", 0xFFFFFF, 0x0F61B8);
 
     u32 start_w = s_fb_w >= 1280 ? 116 : (s_fb_w >= 640 ? 104 : 80);
     FillVerticalGradient(8, task_y + 5, start_w, task_h - 10,

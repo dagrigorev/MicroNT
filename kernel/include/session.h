@@ -35,4 +35,9 @@ struct SystemSession {
 void Init();
 InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg);
 
+// Drain pending PS/2 mouse input and drive the shell hit-test model: moves the
+// logical pointer, and reacts to clicks (e.g. toggling the Start menu).  Called
+// from the kernel's interactive idle loop after the session is up.
+void PumpInteractiveInput();
+
 } // namespace SM

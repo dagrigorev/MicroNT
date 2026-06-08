@@ -151,4 +151,47 @@ bool ClickPointer(PointerState& pointer,
     return true;
 }
 
+PointerEvent ProcessPointer(PointerState& pointer,
+                            const DESKTOPMODEL::DesktopLayout& layout,
+                            u32 x, u32 y, bool left_down) {
+    PointerEvent event{};
+    event.Target = HitTargetKind::None;
+
+    if (!pointer.HitTestingReady || !layout.Ready ||
+        pointer.SessionId != layout.SessionId) {
+        return event;
+    }
+
+    HitTargetKind prev_target = pointer.HotTarget;
+    u32 prev_index = pointer.TargetIndex;
+
+    pointer.X = x;
+    pointer.Y = y;
+    ResolveHitTarget(pointer, layout);
+
+    event.Target = pointer.HotTarget;
+    event.TargetIndex = pointer.TargetIndex;
+
+    // Only log when the hot target actually changes -- a live mouse delivers
+    // hundreds of samples per second and would otherwise flood the serial log.
+    if (pointer.HotTarget != prev_target || pointer.TargetIndex != prev_index) {
+        event.Moved = true;
+        Debug::Printf("[SHELLINPUT] Session %u pointer over %s[%u] at (%u,%u)\r\n",
+                      pointer.SessionId, HitName(pointer.HotTarget),
+                      pointer.TargetIndex, pointer.X, pointer.Y);
+    }
+
+    // Click = left button release edge (press followed by release).
+    if (pointer.LeftButtonDown && !left_down) {
+        event.Clicked = true;
+        pointer.ClickDelivered = true;
+        Debug::Printf("[SHELLINPUT] Session %u pointer click -> %s[%u]\r\n",
+                      pointer.SessionId, HitName(pointer.HotTarget),
+                      pointer.TargetIndex);
+    }
+    pointer.LeftButtonDown = left_down;
+
+    return event;
+}
+
 } // namespace SHELLINPUT
