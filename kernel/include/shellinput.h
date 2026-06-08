@@ -29,6 +29,14 @@ struct PointerState {
     bool ClickDelivered;
 };
 
+// Result of feeding one live mouse sample into the hit-test model.
+struct PointerEvent {
+    bool Moved;              // hot target or index changed since last sample
+    bool Clicked;            // left button release edge (press -> release)
+    HitTargetKind Target;    // target under the pointer at event time
+    u32 TargetIndex;         // sub-index (icon/window/taskbar slot)
+};
+
 void Init();
 bool AttachLayout(PointerState& pointer,
                   const INPUTHOST::InputDesktop& input,
@@ -41,5 +49,12 @@ bool MovePointer(PointerState& pointer,
 bool ClickPointer(PointerState& pointer,
                   const DESKTOPMODEL::DesktopLayout& layout,
                   u32 x, u32 y);
+
+// Live-input path: feed one absolute sample from the PS/2 mouse.  Updates the
+// pointer position, re-resolves the hot target quietly (logging only when the
+// target changes), and reports a click on the left-button release edge.
+PointerEvent ProcessPointer(PointerState& pointer,
+                            const DESKTOPMODEL::DesktopLayout& layout,
+                            u32 x, u32 y, bool left_down);
 
 } // namespace SHELLINPUT

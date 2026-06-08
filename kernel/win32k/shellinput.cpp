@@ -28,30 +28,40 @@ static void ResolveHitTarget(PointerState& pointer,
     pointer.HotTarget = HitTargetKind::Desktop;
     pointer.TargetIndex = 0;
 
-    u32 task_h = 44;
-    u32 task_y = 1080 - task_h;
-    if (pointer.Y >= task_y) {
-        if (InRect(pointer.X, pointer.Y, 8, task_y + 5, 116, task_h - 10)) {
+    DESKTOPMODEL::TaskbarMetrics tb =
+        DESKTOPMODEL::ComputeTaskbar(layout.ScreenW, layout.ScreenH,
+                                     layout.WindowCount);
+    if (pointer.Y >= tb.Y) {
+        if (InRect(pointer.X, pointer.Y, tb.StartX, tb.Y, tb.StartW, tb.Height)) {
             pointer.HotTarget = HitTargetKind::StartButton;
             return;
         }
-        if (pointer.X >= 1920 - 154) {
+        if (pointer.X >= tb.TrayX) {
             pointer.HotTarget = HitTargetKind::Tray;
             return;
         }
-        pointer.HotTarget = HitTargetKind::Taskbar;
-        pointer.TargetIndex = pointer.X > 136 ? (pointer.X - 136) / 132 : 0;
+        u32 slot = tb.ButtonW + tb.ButtonGap;
+        if (pointer.X >= tb.FirstButtonX &&
+            pointer.X < tb.FirstButtonX + tb.ButtonCount * slot) {
+            pointer.HotTarget = HitTargetKind::Taskbar;
+            pointer.TargetIndex = (pointer.X - tb.FirstButtonX) / slot;
+        } else {
+            pointer.HotTarget = HitTargetKind::Taskbar;
+            pointer.TargetIndex = 0;
+        }
         return;
     }
 
     if (layout.StartMenuOpen) {
-        u32 menu_w = 345;
-        u32 menu_h = 420;
-        u32 menu_y = task_y - menu_h;
-        if (InRect(pointer.X, pointer.Y, 8, menu_y, menu_w, menu_h)) {
+        // Win11 Start: a centered flyout anchored above the centered taskbar.
+        u32 menu_w = 640;
+        u32 menu_h = 720;
+        u32 menu_x = layout.ScreenW > menu_w ? (layout.ScreenW - menu_w) / 2 : 0;
+        u32 menu_y = tb.Y > menu_h + 12 ? tb.Y - menu_h - 12 : 0;
+        if (InRect(pointer.X, pointer.Y, menu_x, menu_y, menu_w, menu_h)) {
             pointer.HotTarget = HitTargetKind::StartMenu;
-            pointer.TargetIndex = pointer.Y > menu_y + 78
-                ? (pointer.Y - menu_y - 78) / 34
+            pointer.TargetIndex = pointer.Y > menu_y + 120
+                ? (pointer.Y - menu_y - 120) / 96
                 : 0;
             return;
         }
@@ -149,6 +159,49 @@ bool ClickPointer(PointerState& pointer,
                   pointer.SessionId, HitName(pointer.HotTarget),
                   pointer.TargetIndex);
     return true;
+}
+
+PointerEvent ProcessPointer(PointerState& pointer,
+                            const DESKTOPMODEL::DesktopLayout& layout,
+                            u32 x, u32 y, bool left_down) {
+    PointerEvent event{};
+    event.Target = HitTargetKind::None;
+
+    if (!pointer.HitTestingReady || !layout.Ready ||
+        pointer.SessionId != layout.SessionId) {
+        return event;
+    }
+
+    HitTargetKind prev_target = pointer.HotTarget;
+    u32 prev_index = pointer.TargetIndex;
+
+    pointer.X = x;
+    pointer.Y = y;
+    ResolveHitTarget(pointer, layout);
+
+    event.Target = pointer.HotTarget;
+    event.TargetIndex = pointer.TargetIndex;
+
+    // Only log when the hot target actually changes -- a live mouse delivers
+    // hundreds of samples per second and would otherwise flood the serial log.
+    if (pointer.HotTarget != prev_target || pointer.TargetIndex != prev_index) {
+        event.Moved = true;
+        Debug::Printf("[SHELLINPUT] Session %u pointer over %s[%u] at (%u,%u)\r\n",
+                      pointer.SessionId, HitName(pointer.HotTarget),
+                      pointer.TargetIndex, pointer.X, pointer.Y);
+    }
+
+    // Click = left button release edge (press followed by release).
+    if (pointer.LeftButtonDown && !left_down) {
+        event.Clicked = true;
+        pointer.ClickDelivered = true;
+        Debug::Printf("[SHELLINPUT] Session %u pointer click -> %s[%u]\r\n",
+                      pointer.SessionId, HitName(pointer.HotTarget),
+                      pointer.TargetIndex);
+    }
+    pointer.LeftButtonDown = left_down;
+
+    return event;
 }
 
 } // namespace SHELLINPUT

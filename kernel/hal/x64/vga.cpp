@@ -382,12 +382,23 @@ static void FillEllipse(u32 cx, u32 cy, u32 rx, u32 ry, u32 rgb) {
     }
 }
 
-static void DrawFlag(u32 x, u32 y, u32 scale) {
-    u32 s = scale ? scale : 1;
-    FillVerticalGradient(x, y, 11 * s, 11 * s, 0xFF744E, 0xE41D19);
-    FillVerticalGradient(x + 13 * s, y, 11 * s, 11 * s, 0x8BF168, 0x15A333);
-    FillVerticalGradient(x, y + 13 * s, 11 * s, 11 * s, 0x68D5FF, 0x116CE4);
-    FillVerticalGradient(x + 13 * s, y + 13 * s, 11 * s, 11 * s, 0xFFEC72, 0xEDA610);
+// Windows 11 logo: four equal squares in a 2x2 grid with a thin gutter.
+static void DrawWinLogo(u32 x, u32 y, u32 cell, u32 gap, u32 color) {
+    FillRect(x, y, cell, cell, color);
+    FillRect(x + cell + gap, y, cell, cell, color);
+    FillRect(x, y + cell + gap, cell, cell, color);
+    FillRect(x + cell + gap, y + cell + gap, cell, cell, color);
+}
+
+// Flat tile with a colored glyph badge -- used for taskbar app buttons and
+// Start-menu pinned tiles in the Windows 11 style.
+static void DrawAppTile(u32 x, u32 y, u32 size, u32 badge, char letter,
+                        u32 bg) {
+    FillRect(x, y, size, size, bg);
+    u32 inset = size / 6;
+    FillRect(x + inset, y + inset, size - 2 * inset, size - 2 * inset, badge);
+    char s[2] = { letter, 0 };
+    DrawTextAbs(x + size / 2 - 4, y + size / 2 - 8, s, 0xFFFFFF, badge);
 }
 
 static void DrawDesktopIcon(u32 x, u32 y, const char* label, u32 body, u32 shade) {
@@ -406,60 +417,73 @@ static void DrawFolderIcon(u32 x, u32 y, const char* label) {
     DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
 }
 
+// Flat Windows 11 control glyphs (minimize / maximize / close) on a light
+// title bar.  Close is tinted red so it reads as the close affordance.
+static void DrawWinControls(u32 x, u32 y, u32 w, u32 th, u32 surface) {
+    u32 cw = 46;
+    u32 mid = y + th / 2;
+    FillRect(x + w - 3 * cw + cw / 2 - 5, mid, 11, 1, 0x202020);          // _
+    RectOutline(x + w - 2 * cw + cw / 2 - 5, mid - 5, 11, 11,
+                0x6A6A6A, 0x6A6A6A);                                      // []
+    DrawTextAbs(x + w - cw + cw / 2 - 4, mid - 8, "x", 0xC42B1C, surface); // x
+}
+
 static void DrawPanelWindow(u32 x, u32 y, u32 w, u32 h, const char* title,
                             bool toolbar, const char* status) {
-    FillRect(x + 8, y + 12, w, h, 0x174A86);
-    FillRect(x, y, w, h, 0xF8FCFF);
-    RectOutline(x, y, w, h, 0xFFFFFF, 0x2375D5);
-    FillVerticalGradient(x + 1, y + 1, w - 2, 30, 0x4CB4FF, 0x0960C5);
-    FillVerticalGradient(x + 8, y + 8, 15, 15, 0xFFFFFF, 0x0B5DBC);
-    DrawTextAbs(x + 30, y + 8, title, 0xFFFFFF, 0x197DE5);
-    u32 bx = x + w - 76;
-    for (u32 i = 0; i < 3; ++i) {
-        u32 c1 = i == 2 ? 0xFF927A : 0x72C6FF;
-        u32 c2 = i == 2 ? 0xE02618 : 0x1979E2;
-        FillVerticalGradient(bx + i * 24, y + 6, 20, 20, c1, c2);
-        RectOutline(bx + i * 24, y + 6, 20, 20, 0xC7DEFF, 0x0D2D89);
-    }
-    DrawTextAbs(bx + 6, y + 7, "_", 0xFFFFFF, 0x1979E2);
-    DrawTextAbs(bx + 30, y + 7, "o", 0xFFFFFF, 0x1979E2);
-    DrawTextAbs(bx + 54, y + 7, "x", 0xFFFFFF, 0xE02618);
+    const u32 surface = 0xF3F3F3;   // light Mica
+    const u32 border  = 0xDADADA;
+    const u32 ink     = 0x1A1A1A;
+    const u32 navbg   = 0xEAEAEA;
+    const u32 accent  = 0x0078D4;
+    u32 th = 32;
 
-    u32 cy = y + 31;
+    FillRect(x + 6, y + 9, w, h, 0x0E2348);             // soft drop shadow
+    FillRect(x, y, w, h, surface);                      // body
+    RectOutline(x, y, w, h, border, border);            // thin border
+    DrawTextAbs(x + 14, y + (th - 16) / 2, title, ink, surface);
+    FillRect(x, y + th, w, 1, 0xE6E6E6);                // hairline divider
+    DrawWinControls(x, y, w, th, surface);
+
+    u32 cy = y + th + 1;
     if (toolbar) {
-        FillVerticalGradient(x + 1, cy, w - 2, 38, 0xFFFFFF, 0xEEF6FF);
-        FillRect(x + 1, cy + 37, w - 2, 1, 0xC8D9EF);
-        DrawTextAbs(x + 12, cy + 11, "< Back", 0x28445F, 0xF8FCFF);
-        FillRect(x + w - 250, cy + 7, 145, 24, 0xFFFFFF);
-        RectOutline(x + w - 250, cy + 7, 145, 24, 0xB9CBE0, 0xB9CBE0);
-        DrawTextAbs(x + w - 238, cy + 11, title, 0x39627F, 0xFFFFFF);
-        FillRect(x + w - 96, cy + 7, 84, 24, 0xFFFFFF);
-        RectOutline(x + w - 96, cy + 7, 84, 24, 0xB9CBE0, 0xB9CBE0);
-        DrawTextAbs(x + w - 86, cy + 11, "Search", 0x7C8DA0, 0xFFFFFF);
-        cy += 38;
+        FillRect(x + 1, cy, w - 2, 36, 0xF7F7F7);
+        FillRect(x + 1, cy + 36, w - 2, 1, 0xE6E6E6);
+        DrawTextAbs(x + 14, cy + 12, "<  >", 0x4A4A4A, 0xF7F7F7);
+        FillRect(x + 70, cy + 6, w - 230, 24, 0xFFFFFF);   // address pill
+        RectOutline(x + 70, cy + 6, w - 230, 24, 0xCFCFCF, 0xCFCFCF);
+        DrawTextAbs(x + 82, cy + 11, title, 0x3A3A3A, 0xFFFFFF);
+        FillRect(x + w - 150, cy + 6, 138, 24, 0xFFFFFF);  // search pill
+        RectOutline(x + w - 150, cy + 6, 138, 24, 0xCFCFCF, 0xCFCFCF);
+        DrawTextAbs(x + w - 138, cy + 11, "Search", 0x9A9A9A, 0xFFFFFF);
+        cy += 37;
     }
 
-    FillVerticalGradient(x + 12, cy + 12, 150, h - (cy - y) - 46, 0xE7F3FF, 0xD3E8FF);
-    RectOutline(x + 12, cy + 12, 150, h - (cy - y) - 46, 0xFFFFFF, 0xC3D8EF);
-    DrawTextAbs(x + 24, cy + 24, "System Tasks", 0x153F77, 0xE7F3FF);
-    DrawTextAbs(x + 24, cy + 52, "View information", 0x244E7C, 0xE2EFFF);
-    DrawTextAbs(x + 24, cy + 78, "Change settings", 0x244E7C, 0xDFEDFF);
-    DrawTextAbs(x + 24, cy + 120, "Other Places", 0x153F77, 0xDCEBFF);
+    // Left navigation pane.
+    u32 nav_h = h - (cy - y) - 34;
+    FillRect(x + 8, cy + 8, 168, nav_h, navbg);
+    DrawTextAbs(x + 20, cy + 20, "Home", accent, navbg);
+    DrawTextAbs(x + 20, cy + 48, "Gallery", 0x3A3A3A, navbg);
+    DrawTextAbs(x + 20, cy + 84, "This PC", 0x3A3A3A, navbg);
+    DrawTextAbs(x + 20, cy + 112, "Network", 0x3A3A3A, navbg);
 
-    u32 px = x + 184;
-    DrawTextAbs(px, cy + 18, "Hard Disk Drives", 0x084FB4, 0xF8FCFF);
+    // Devices and drives (content area).
+    u32 px = x + 200;
+    DrawTextAbs(px, cy + 16, "Devices and drives", 0x5A5A5A, surface);
     for (u32 i = 0; i < 4; ++i) {
-        u32 ix = px + (i % 2) * 190;
-        u32 iy = cy + 52 + (i / 2) * 72;
-        FillVerticalGradient(ix, iy + 8, 40, 25, 0xFFFFFF, 0x65788D);
-        RectOutline(ix, iy + 8, 40, 25, 0xFFFFFF, 0x65788D);
-        DrawTextAbs(ix + 52, iy, i == 0 ? "System (C:)" : (i == 1 ? "Data (D:)" : (i == 2 ? "DVD (E:)" : "USB (F:)")), 0x203B55, 0xF8FCFF);
-        FillRect(ix + 52, iy + 22, 100, 8, 0xEEF4FB);
-        FillVerticalGradient(ix + 53, iy + 23, 58 + i * 8, 6, 0x0A61D5, 0x4AA8FF);
+        u32 ix = px + (i % 2) * 200;
+        u32 iy = cy + 48 + (i / 2) * 76;
+        FillRect(ix, iy + 6, 42, 28, 0xD7DEE8);
+        RectOutline(ix, iy + 6, 42, 28, 0xBFC8D4, 0xBFC8D4);
+        const char* dn = i == 0 ? "System (C:)" : (i == 1 ? "Data (D:)"
+                       : (i == 2 ? "DVD (E:)" : "USB (F:)"));
+        DrawTextAbs(ix + 54, iy, dn, 0x2A2A2A, surface);
+        FillRect(ix + 54, iy + 24, 130, 6, 0xE2E2E2);
+        FillRect(ix + 54, iy + 24, 70 + i * 10, 6, accent);
     }
 
-    FillVerticalGradient(x + 1, y + h - 24, w - 2, 23, 0xF5FBFF, 0xD9ECFF);
-    DrawTextAbs(x + 10, y + h - 18, status, 0x526A82, 0xE5F3FF);
+    // Status bar.
+    FillRect(x + 1, y + h - 26, w - 2, 25, 0xECECEC);
+    DrawTextAbs(x + 12, y + h - 19, status, 0x5A5A5A, 0xECECEC);
 }
 
 static void DrawMouseCursor(u32 x, u32 y) {
@@ -671,37 +695,27 @@ void StartDesktop(const UXTHEME::Theme& theme,
     if (!s_fb) return;
     s_mouse_visible = false;
 
-    // Desktop shell mockup: XP-redesign wallpaper, icon rail, open Start menu,
-    // taskbar, and several static shell windows around the live command window.
-    FillVerticalGradient(0, 0, s_fb_w, s_fb_h, 0x0771D9, 0x88DFFF);
-    FillEllipse(s_fb_w / 6, s_fb_h / 5, s_fb_w / 11, s_fb_h / 34, 0xFFFFFF);
-    FillEllipse(s_fb_w / 4, s_fb_h / 5 - 16, s_fb_w / 13, s_fb_h / 30, 0xF4FCFF);
-    FillEllipse((s_fb_w * 62) / 100, s_fb_h / 4, s_fb_w / 10, s_fb_h / 28, 0xF6FCFF);
-    FillEllipse((s_fb_w * 83) / 100, s_fb_h / 5, s_fb_w / 10, s_fb_h / 34, 0xFFFFFF);
+    // Windows 11 "Bloom" wallpaper: deep-blue field with a centered radial glow
+    // built from concentric ellipses (no alpha blending in the framebuffer).
+    FillVerticalGradient(0, 0, s_fb_w, s_fb_h, theme.WallpaperTop,
+                         theme.WallpaperBottom);
+    u32 cx = s_fb_w / 2;
+    u32 cy = (s_fb_h * 42) / 100;
+    FillEllipse(cx, cy, (s_fb_w * 46) / 100, (s_fb_h * 46) / 100, 0x0E2E66);
+    FillEllipse(cx, cy, (s_fb_w * 34) / 100, (s_fb_h * 34) / 100, 0x123C82);
+    FillEllipse(cx, cy, (s_fb_w * 24) / 100, (s_fb_h * 24) / 100, 0x1A52A8);
+    FillEllipse(cx, cy, (s_fb_w * 15) / 100, (s_fb_h * 15) / 100, 0x2A6FD0);
+    FillEllipse(cx, cy, (s_fb_w *  8) / 100, (s_fb_h *  8) / 100, 0x4A93F0);
+    // Bloom "petals" -- offset translucent-looking flares around the core.
+    FillEllipse(cx - s_fb_w / 8, cy - s_fb_h / 9, s_fb_w / 9, s_fb_h / 14, 0x2360C4);
+    FillEllipse(cx + s_fb_w / 7, cy + s_fb_h / 10, s_fb_w / 8, s_fb_h / 13, 0x1C57B6);
+    FillEllipse(cx + s_fb_w / 9, cy - s_fb_h / 8, s_fb_w / 11, s_fb_h / 16, 0x3A82E0);
+    u32 h1 = (s_fb_h * 60) / 100;   // reference band for the default cursor parking
 
-    u32 h1 = (s_fb_h * 63) / 100;
-    u32 h2 = (s_fb_h * 71) / 100;
-    u32 h3 = (s_fb_h * 79) / 100;
-    FillVerticalGradient(0, h1, s_fb_w, s_fb_h - h1, 0x9CF264, 0x299A3C);
-    FillVerticalGradient(0, h2, s_fb_w, s_fb_h - h2, 0x7BE754, 0x1C7F35);
-    FillVerticalGradient(0, h3, s_fb_w, s_fb_h - h3, 0x35B944, 0x1C8A35);
-    for (u32 x = 0; x < s_fb_w; x += 3) {
-        u32 y = h1 + ((x * 37) % 90);
-        if (y < s_fb_h) FillRect(x, y, 2, 3, 0xC8F7A6);
-    }
-
-    u32 task_h = s_fb_h >= 720 ? 44 : (s_fb_h >= 480 ? 38 : 30);
-    u32 task_y = s_fb_h > task_h ? s_fb_h - task_h : 0;
-    FillVerticalGradient(0, task_y, s_fb_w, task_h,
-                         theme.TaskbarTop, theme.TaskbarBottom);
-    FillRect(0, task_y, s_fb_w, 1, 0x7DB7FF);
-
-    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 28,
-                layout.BrandName ? layout.BrandName : "MicroNT",
-                0xFFFFFF, 0x159DFF);
-    DrawTextAbs(s_fb_w > 360 ? s_fb_w - 352 : 16, 48,
-                layout.BrandTag ? layout.BrandTag : "Simply Fast. Reliably Yours.",
-                0xFFFFFF, 0x159DFF);
+    DESKTOPMODEL::TaskbarMetrics tb =
+        DESKTOPMODEL::ComputeTaskbar(s_fb_w, s_fb_h, layout.WindowCount);
+    u32 task_y = tb.Y;
+    u32 task_h = tb.Height;
 
     u32 icon_x = 18, icon_y = 14;
     for (u32 i = 0; i < layout.IconCount; ++i) {
@@ -741,99 +755,117 @@ void StartDesktop(const UXTHEME::Theme& theme,
         DrawPanelWindow(x, y, w, h, win.Title, win.Toolbar, win.Status);
     }
 
-    u32 menu_w = s_fb_w >= 900 ? 345 : 300;
-    u32 menu_h = s_fb_h >= 700 ? 420 : 330;
-    u32 menu_y = task_y > menu_h ? task_y - menu_h : 0;
-    FillRect(8 + 8, menu_y + 12, menu_w, menu_h, 0x1C3765);
-    FillRect(8, menu_y, menu_w, menu_h, 0xFFFFFF);
-    RectOutline(8, menu_y, menu_w, menu_h, 0x7DB7FF, 0x0C5BB9);
-    FillVerticalGradient(9, menu_y + 1, menu_w - 2, 64, 0x1679D8, 0x0056BA);
-    DrawFlag(24, menu_y + 18, 1);
-    DrawTextAbs(58, menu_y + 24, "MicroNT", 0xFFFFFF, 0x0A62C0);
-    FillRect(9, menu_y + 65, (menu_w * 53) / 100, menu_h - 103, 0xFFFFFF);
-    FillVerticalGradient(9 + (menu_w * 53) / 100, menu_y + 65,
-                         menu_w - (menu_w * 53) / 100 - 2, menu_h - 103,
-                         0xD9EDFF, 0x79B6ED);
-    const char* left[] = { "Internet", "E-mail", "Media Player", "Documents",
-                           "Control Panel", "Help and Support", "Search", "Run..." };
-    for (u32 i = 0; i < 8; ++i) {
-        u32 yy = menu_y + 78 + i * 34;
-        if (i == 3) FillRect(16, yy - 5, (menu_w * 53) / 100 - 20, 28, 0xE5F2FF);
-        DrawTextAbs(28, yy, left[i], 0x12395E, i == 3 ? 0xE5F2FF : 0xFFFFFF);
-    }
-    const char* right[] = { "Admin", "My Documents", "My Pictures", "My Music",
-                            "My Computer", "Control Panel", "Devices", "Defaults" };
-    for (u32 i = 0; i < 8; ++i) {
-        u32 rx = 24 + (menu_w * 53) / 100;
-        DrawTextAbs(rx, menu_y + 80 + i * 32, right[i], 0x12395E, 0xB8D9F6);
-    }
-    FillVerticalGradient(9, menu_y + menu_h - 38, menu_w - 2, 37, 0x1D76D2, 0x064FA8);
-    DrawTextAbs(190, menu_y + menu_h - 25, "Log Off", 0xFFFFFF, 0x0F61B8);
-    DrawTextAbs(254, menu_y + menu_h - 25, "Turn Off", 0xFFFFFF, 0x0F61B8);
+    // --- Windows 11 taskbar: flat dark, full-width, centered icon cluster ---
+    FillVerticalGradient(0, task_y, s_fb_w, task_h,
+                         theme.TaskbarTop, theme.TaskbarBottom);
+    FillRect(0, task_y, s_fb_w, 1, 0x3C3C3C);
 
-    u32 start_w = s_fb_w >= 1280 ? 116 : (s_fb_w >= 640 ? 104 : 80);
-    FillVerticalGradient(8, task_y + 5, start_w, task_h - 10,
-                         theme.StartTop, theme.StartBottom);
-    RectOutline(8, task_y + 5, start_w, task_h - 10, 0xC6F4A5, 0x0A5A0A);
-    DrawFlag(20, task_y + 10, 1);
-    DrawTextAbs(56, task_y + 14, "Start", 0xFFFFFF, 0x2BA536);
-
-    u32 tbx = 136;
-    for (u32 i = 0; i < layout.WindowCount && tbx + 126 < s_fb_w; ++i) {
-        FillVerticalGradient(tbx, task_y + 6, 125, task_h - 12,
-                             0x4EB2F7, 0x0D53AD);
-        RectOutline(tbx, task_y + 6, 125, task_h - 12, 0x9BC3FF, 0x0B2D8F);
-        DrawTextAbs(tbx + 10, task_y + 15, layout.Windows[i].Title,
-                    0xFFFFFF, 0x2A79D0);
-        tbx += 132;
-    }
-    if (tbx + 126 < s_fb_w) {
-        FillVerticalGradient(tbx, task_y + 6, 125, task_h - 12,
-                             0x8BD1FF, 0x2475D6);
-        RectOutline(tbx, task_y + 6, 125, task_h - 12, 0x9BC3FF, 0x0B2D8F);
-        DrawTextAbs(tbx + 10, task_y + 15, "MicroNT Shell",
-                    0xFFFFFF, 0x5FA2EA);
+    // Start button (Windows logo), centered with the app cluster.
+    {
+        u32 logo_cell = 8, logo_gap = 3;
+        u32 logo_dim = 2 * logo_cell + logo_gap;
+        u32 lx = tb.StartX + (tb.StartW - logo_dim) / 2;
+        u32 ly = task_y + (task_h - logo_dim) / 2;
+        DrawWinLogo(lx, ly, logo_cell, logo_gap, 0x4CC2FF);
     }
 
-    u32 tray_w = s_fb_w >= 640 ? 154 : 96;
-    u32 tray_x = s_fb_w > tray_w ? s_fb_w - tray_w : 0;
-    FillRect(tray_x + 4, task_y + 5, tray_w - 8, task_h - 10, 0x0A65B5);
-    FillEllipse(tray_x + 18, task_y + task_h / 2, 6, 6, 0xA9F75B);
-    DrawTextAbs(tray_x + 34, task_y + 14, "NET  VOL  00:00", 0xFFFFFF, 0x0A65B5);
+    // Pinned/running app buttons.
+    static const u32 s_badge[] = {
+        0x0078D4, 0xCA5010, 0x107C10, 0x8764B8, 0xC30052, 0x0099BC
+    };
+    u32 slot = tb.ButtonW + tb.ButtonGap;
+    u32 tile = task_h >= 44 ? 36 : 28;
+    u32 tile_y = task_y + (task_h - tile) / 2;
+    for (u32 i = 0; i < layout.WindowCount; ++i) {
+        u32 bx = tb.FirstButtonX + i * slot;
+        u32 tx = bx + (tb.ButtonW - tile) / 2;
+        bool active = (i == 0);
+        u32 badge = s_badge[i % (sizeof(s_badge) / sizeof(s_badge[0]))];
+        const char* title = layout.Windows[i].Title;
+        DrawAppTile(tx, tile_y, tile, badge, title ? title[0] : '?',
+                    active ? 0x383838 : theme.TaskbarBottom);
+        if (active) {
+            // Win11 active-app underline pill.
+            FillRect(bx + tb.ButtonW / 2 - 8, task_y + task_h - 4, 16, 3,
+                     theme.Accent);
+        }
+    }
+
+    // Notification area (right): status glyphs + clock on the dark bar.
+    {
+        u32 ty = task_y + (task_h - 16) / 2;
+        DrawTextAbs(tb.TrayX + 24, ty, "^  NET  VOL", 0xC8C8C8,
+                    theme.TaskbarBottom);
+        DrawTextAbs(tb.TrayX + tb.TrayW - 84, ty, "12:00 PM", 0xFFFFFF,
+                    theme.TaskbarBottom);
+    }
+
+    // --- Windows 11 Start flyout: centered dark panel above the taskbar ---
+    if (layout.StartMenuOpen) {
+        u32 menu_w = 640;
+        u32 menu_h = 720;
+        u32 menu_x = s_fb_w > menu_w ? (s_fb_w - menu_w) / 2 : 0;
+        u32 menu_y = task_y > menu_h + 12 ? task_y - menu_h - 12 : 0;
+
+        FillRect(menu_x, menu_y, menu_w, menu_h, 0x2B2B2B);
+        RectOutline(menu_x, menu_y, menu_w, menu_h, 0x3A3A3A, 0x141414);
+
+        // Search pill.
+        FillRect(menu_x + 40, menu_y + 36, menu_w - 80, 40, 0x3A3A3A);
+        RectOutline(menu_x + 40, menu_y + 36, menu_w - 80, 40, 0x4A4A4A, 0x202020);
+        DrawTextAbs(menu_x + 56, menu_y + 48, "Search for apps and settings",
+                    0x9A9A9A, 0x3A3A3A);
+
+        DrawTextAbs(menu_x + 40, menu_y + 104, "Pinned", 0xE8E8E8, 0x2B2B2B);
+
+        static const char* pinned[] = {
+            "Edge", "Files", "Settings", "Store", "Photos", "Mail",
+            "Notepad", "Terminal"
+        };
+        for (u32 i = 0; i < 8; ++i) {
+            u32 col = i % 4, rowi = i / 4;
+            u32 gx = menu_x + 40 + col * 140;
+            u32 gy = menu_y + 132 + rowi * 110;
+            u32 badge = s_badge[i % (sizeof(s_badge) / sizeof(s_badge[0]))];
+            DrawAppTile(gx + 38, gy, 48, badge, pinned[i][0], 0x2B2B2B);
+            DrawTextAbs(gx + 30, gy + 56, pinned[i], 0xD8D8D8, 0x2B2B2B);
+        }
+
+        // User / power row.
+        FillRect(menu_x, menu_y + menu_h - 56, menu_w, 56, 0x242424);
+        FillEllipse(menu_x + 56, menu_y + menu_h - 28, 14, 14, 0x0078D4);
+        DrawTextAbs(menu_x + 84, menu_y + menu_h - 34, "MicroNT User",
+                    0xE8E8E8, 0x242424);
+        DrawTextAbs(menu_x + menu_w - 60, menu_y + menu_h - 34, "(power)",
+                    0xC8C8C8, 0x242424);
+    }
 
     u32 win_x = s_fb_w >= 1280 ? 210 : 96;
     u32 win_y = s_fb_h >= 900 ? 540 : 360;
     u32 win_w = s_fb_w >= 1280 ? 760 : s_fb_w - win_x - 24;
     u32 win_h = s_fb_h >= 900 ? 360 : 290;
 
-    FillRect(win_x + 5, win_y + 6, win_w, win_h, 0x24508A);
-    FillRect(win_x, win_y, win_w, win_h, theme.WindowFrame);
-    RectOutline(win_x, win_y, win_w, win_h, 0xFFFFFF, 0x315BA3);
+    const u32 cmd_surface = theme.WindowFrame;   // light Mica
+    FillRect(win_x + 6, win_y + 9, win_w, win_h, 0x0E2348);    // soft shadow
+    FillRect(win_x, win_y, win_w, win_h, cmd_surface);
+    RectOutline(win_x, win_y, win_w, win_h, 0xDADADA, 0xDADADA);
 
-    FillVerticalGradient(win_x + 3, win_y + 3, win_w - 6, 28,
-                         theme.WindowTitleTop, theme.WindowTitleBottom);
-    DrawTextAbs(win_x + 12, win_y + 9, "MicroNT Command Prompt", 0xFFFFFF, 0x1C5DE4);
-    u32 bx = win_x + win_w - 76;
-    for (u32 i = 0; i < 3; ++i) {
-        FillVerticalGradient(bx + i * 23, win_y + 7, 19, 18, 0x75A7FF, 0x1E55CF);
-        RectOutline(bx + i * 23, win_y + 7, 19, 18, 0xC7DEFF, 0x0D2D89);
-    }
-    DrawTextAbs(bx + 6,  win_y + 8, "_", 0xFFFFFF, 0x4D83EF);
-    DrawTextAbs(bx + 29, win_y + 8, "o", 0xFFFFFF, 0x4D83EF);
-    DrawTextAbs(bx + 52, win_y + 8, "x", 0xFFFFFF, 0x4D83EF);
+    DrawTextAbs(win_x + 14, win_y + 8, "MicroNT Terminal", 0x1A1A1A, cmd_surface);
+    FillRect(win_x, win_y + 32, win_w, 1, 0xE6E6E6);
+    DrawWinControls(win_x, win_y, win_w, 32, cmd_surface);
 
     u32 client_x = win_x + 8;
-    u32 client_y = win_y + 36;
+    u32 client_y = win_y + 40;
     u32 client_w = win_w > 16 ? win_w - 16 : win_w;
-    u32 client_h = win_h > 72 ? win_h - 72 : win_h;
-    FillRect(client_x, client_y, client_w, client_h, 0x000000);
-    RectOutline(client_x - 1, client_y - 1, client_w + 2, client_h + 2, 0x7F9DB9, 0xFFFFFF);
-    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, theme.WindowFrame);
-    RectOutline(win_x + 8, win_y + win_h - 28, win_w - 16, 20, 0xFFFFFF, 0xACA899);
+    u32 client_h = win_h > 80 ? win_h - 80 : win_h;
+    FillRect(client_x, client_y, client_w, client_h, 0x0C0C0C);  // Win11 Terminal
+    RectOutline(client_x - 1, client_y - 1, client_w + 2, client_h + 2,
+                0xDADADA, 0xDADADA);
+    FillRect(win_x + 8, win_y + win_h - 28, win_w - 16, 20, cmd_surface);
 
     ResetTextSurface(client_x, client_y, client_w, client_h);
 
-    const char hdr[] = "*** MicroNT Shell - Windows XP style ***";
+    const char hdr[] = "*** MicroNT Shell - Windows 11 style ***";
     u32 hlen = sizeof(hdr) - 1;
     u32 hstart = (s_cols > hlen) ? (s_cols - hlen) / 2 : 0;
     for (u32 c = 0; c < s_cols; ++c) s_cells[0][c] = { ' ', 0x1F };

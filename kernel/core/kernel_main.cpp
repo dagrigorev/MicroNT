@@ -1265,6 +1265,9 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         };
         SM::StartInteractiveSession(shell_cfg);
 
-        while (true) { Sched::Schedule(); }
+        while (true) {
+            SM::PumpInteractiveInput();   // drain PS/2 mouse -> shell hit-testing
+            Sched::Schedule();
+        }
     }
 }

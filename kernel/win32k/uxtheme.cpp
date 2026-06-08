@@ -10,16 +10,20 @@ void Init() {
 }
 
 bool LoadDefaultTheme(Theme& theme) {
-    theme.Name = "MicroNT Luna";
-    theme.WallpaperTop = 0x5DB9FF;
-    theme.WallpaperBottom = 0x9BD6FF;
-    theme.TaskbarTop = 0x2D7FF0;
-    theme.TaskbarBottom = 0x0E3FA5;
-    theme.StartTop = 0x7FD34E;
-    theme.StartBottom = 0x258B1F;
-    theme.WindowFrame = 0xECE9D8;
-    theme.WindowTitleTop = 0x2F7DFF;
-    theme.WindowTitleBottom = 0x0A3BB7;
+    // Windows 11 "Fluent" look: dark taskbar, accent blue, Bloom wallpaper,
+    // light window surfaces.
+    theme.Name = "MicroNT 11";
+    theme.WallpaperTop = 0x0A2A5E;       // deep blue (top of Bloom)
+    theme.WallpaperBottom = 0x0C1730;    // near-black blue (bottom)
+    theme.TaskbarTop = 0x2C2C2C;         // dark flat taskbar
+    theme.TaskbarBottom = 0x1E1E1E;
+    theme.StartTop = 0x2C2C2C;
+    theme.StartBottom = 0x1E1E1E;
+    theme.WindowFrame = 0xF3F3F3;        // light Mica surface
+    theme.WindowTitleTop = 0x0078D4;     // flat accent title bar
+    theme.WindowTitleBottom = 0x0067B8;
+    theme.Accent = 0x0078D4;             // Win11 default accent
+    theme.DarkMode = true;
     theme.HighResolutionMetrics = true;
 
     Debug::Printf("[UXTHEME] Theme '%s' loaded\r\n", theme.Name);

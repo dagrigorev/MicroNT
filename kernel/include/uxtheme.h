@@ -16,6 +16,8 @@ struct Theme {
     u32 WindowFrame;
     u32 WindowTitleTop;
     u32 WindowTitleBottom;
+    u32 Accent;          // Fluent accent color (Win11 default #0078D4)
+    bool DarkMode;       // dark taskbar / shell chrome
     bool HighResolutionMetrics;
 };
 

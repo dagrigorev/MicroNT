@@ -164,6 +164,13 @@ bool TryRead(Packet* out) {
     return true;
 }
 
+bool CurrentPosition(i32* x, i32* y) {
+    if (!s_ready) return false;
+    if (x) *x = s_x;
+    if (y) *y = s_y;
+    return true;
+}
+
 void HandleIrq(u8 /*irq*/) {
     u8 status = Inb(PS2_STATUS);
     if ((status & 0x01) == 0) return;

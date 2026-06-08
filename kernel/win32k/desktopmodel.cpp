@@ -37,7 +37,9 @@ bool BuildXpRedesignLayout(DesktopLayout& layout,
     layout.SessionId = scene.SessionId;
     layout.BrandName = "MicroNT";
     layout.BrandTag = "Simply Fast. Reliably Yours.";
-    layout.StartMenuOpen = true;
+    layout.ScreenW = 1920;   // refined from the display target in the session mgr
+    layout.ScreenH = 1080;
+    layout.StartMenuOpen = false;   // Windows 11 boots with Start closed
     layout.Ready = true;
 
     layout.Icons[layout.IconCount++] = MakeIcon(IconKind::Computer, "Computer");
@@ -66,6 +68,32 @@ bool BuildXpRedesignLayout(DesktopLayout& layout,
     Debug::Printf("[DESKTOPMODEL] Session %u XP redesign layout ready (%u icons, %u windows)\r\n",
                   layout.SessionId, layout.IconCount, layout.WindowCount);
     return true;
+}
+
+TaskbarMetrics ComputeTaskbar(u32 screen_w, u32 screen_h, u32 button_count) {
+    if (screen_w == 0) screen_w = 1920;
+    if (screen_h == 0) screen_h = 1080;
+
+    TaskbarMetrics m{};
+    m.Height = screen_h >= 720 ? 48 : 40;
+    m.Y = screen_h - m.Height;
+    m.ButtonW = 44;
+    m.ButtonGap = 6;
+    m.ButtonCount = button_count;
+
+    // Centered cluster = Start button + one button per running app.
+    u32 items = button_count + 1;
+    u32 slot = m.ButtonW + m.ButtonGap;
+    u32 cluster_w = items * m.ButtonW + (items - 1) * m.ButtonGap;
+    u32 cluster_x = screen_w > cluster_w ? (screen_w - cluster_w) / 2 : 0;
+
+    m.StartX = cluster_x;
+    m.StartW = m.ButtonW;
+    m.FirstButtonX = cluster_x + slot;
+
+    m.TrayW = screen_w >= 640 ? 200 : 120;
+    m.TrayX = screen_w > m.TrayW ? screen_w - m.TrayW : 0;
+    return m;
 }
 
 } // namespace DESKTOPMODEL
