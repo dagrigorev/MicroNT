@@ -126,6 +126,9 @@ volatile u32 g_m22_ok        = 0;
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
 
+// Set by the IDT when a hardware fault is delivered to a user SEH handler.
+extern "C" volatile u32 g_seh_delivered = 0;
+
 // M15: shared memory section table
 struct KSection {
     u64   phys[32];

@@ -75,6 +75,7 @@ extern volatile u32 g_m20_ok;
 extern volatile u32 g_m21_ok;
 extern volatile u32 g_m22_ok;
 extern "C" volatile u64 g_pending_exception_va;
+extern "C" volatile u32 g_seh_delivered;
 extern u64 s_user_heap_cursor;
 
 extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
@@ -1277,6 +1278,55 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
 
         while (!g_m22_ok) { Sched::Schedule(); }
         Debug::Print("[MicroNT] M22 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // SEH: hardware-exception delivery to a user handler.
+    //  A user thread registers an exception handler, executes UD2 (illegal
+    //  instruction). The kernel delivers the #UD to the handler (in ring-3),
+    //  which terminates the thread. g_seh_delivered confirms the dispatch.
+    // ----------------------------------------------------------
+    {
+        g_seh_delivered = 0;
+
+        u8 prog[32]; u32 o = 0;
+        auto emit = [&](u8 b) { prog[o++] = b; };
+        emit(0xB8); emit(23); emit(0); emit(0); emit(0);   // mov eax, 23 (NtSetExceptionHandler)
+        emit(0x48); emit(0xBF); u32 imm_off = o;
+        for (int i = 0; i < 8; ++i) emit(0);               // mov rdi, <handler va> (patched)
+        emit(0x0F); emit(0x05);                            // syscall
+        emit(0x0F); emit(0x0B);                            // ud2  -> #UD
+        emit(0xEB); emit(0xFE);                            // jmp $ (safety)
+        u32 handler_off = o;
+        emit(0xB8); emit(1); emit(0); emit(0); emit(0);    // mov eax, 1 (NtTerminateThread)
+        emit(0x31); emit(0xFF);                            // xor edi, edi
+        emit(0x0F); emit(0x05);                            // syscall
+        emit(0xEB); emit(0xFE);                            // jmp $
+
+        constexpr u64 CODE_VA = 0x300001000ULL;
+        constexpr u64 STK_VA  = 0x300002000ULL;
+        u64 handler_va = CODE_VA + handler_off;
+        for (int i = 0; i < 8; ++i) prog[imm_off + i] = (u8)(handler_va >> (i * 8));
+
+        u64 code_phys = PMM::AllocPage();
+        u64 stk_phys  = PMM::AllocPage();
+        KASSERT(code_phys && stk_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) { reinterpret_cast<u8*>(code_phys)[i] = 0;
+                                              reinterpret_cast<u8*>(stk_phys)[i] = 0; }
+        for (u32 i = 0; i < o; ++i) reinterpret_cast<u8*>(code_phys)[i] = prog[i];
+
+        u64 cr3 = VMM::CreateUserPml4(); KASSERT(cr3);
+        KProcess* proc = PS::CreateProcess("sehtest.exe", cr3); KASSERT(proc);
+        KASSERT(VMM::MapPageInto(cr3, CODE_VA, code_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_USER));
+        KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+        KThread* th = PS::CreateUserThread(proc, "sehtest", CODE_VA, STK_VA + PAGE_SIZE);
+        KASSERT(th);
+        Sched::AddThread(th);
+
+        while (!g_seh_delivered) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] SEH ready\r\n");
     }
 
     // ----------------------------------------------------------

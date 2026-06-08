@@ -3,6 +3,10 @@
 #include "../../include/hal.h"
 #include "../../include/debug.h"
 #include "../../include/ntdef.h"
+#include "../../include/process.h"
+
+// Set to 1 when a hardware fault is delivered to a user exception handler.
+extern "C" volatile u32 g_seh_delivered;
 
 // ============================================================
 // Interrupt frame (must match interrupts.asm push order)
@@ -92,6 +96,36 @@ static const char* ExceptionName(u64 v) {
     return "Exception";
 }
 
+// First-chance SEH delivery: if a ring-3 thread faulted and has registered an
+// exception handler, redirect execution to it (handler runs in user mode after
+// IRETQ) instead of taking down the kernel. RDI = NTSTATUS code, RSI = faulting
+// RIP. One-shot to avoid fault storms if the handler itself faults.
+static bool DeliverUserException(InterruptFrame* frame, u64 code) {
+    if ((frame->Cs & 3) != 3) return false;          // fault came from kernel
+    KThread* t = Sched::CurrentThread();
+    if (!t || !t->ExceptionHandler) return false;
+    u64 handler = t->ExceptionHandler;
+    t->ExceptionHandler = 0;
+    frame->rdi = code;
+    frame->rsi = frame->Rip;
+    frame->Rip = handler;
+    g_seh_delivered = 1;
+    Debug::Printf("[SEH] dispatch code=0x%llx faultRIP=0x%016llx -> handler=0x%llx\n",
+                  code, frame->rsi, handler);
+    return true;
+}
+
+// Map a CPU exception vector to the Windows NTSTATUS a handler would expect.
+static u64 ExceptionStatus(u64 vec) {
+    switch (vec) {
+    case 0:  return 0xC0000094;   // STATUS_INTEGER_DIVIDE_BY_ZERO
+    case 6:  return 0xC000001D;   // STATUS_ILLEGAL_INSTRUCTION
+    case 13: return 0xC0000005;   // STATUS_ACCESS_VIOLATION (GP)
+    case 14: return 0xC0000005;   // STATUS_ACCESS_VIOLATION (PF)
+    default: return 0xC0000096;   // STATUS_PRIVILEGED_INSTRUCTION / generic
+    }
+}
+
 // ============================================================
 // Interrupt dispatch (called from interrupts.asm)
 // ============================================================
@@ -111,6 +145,9 @@ extern "C" void InterruptDispatch(InterruptFrame* frame) {
                 return;  // fault resolved, resume execution
             }
 
+            // First-chance delivery to a ring-3 exception handler.
+            if (DeliverUserException(frame, ExceptionStatus(vec))) return;
+
             // Unhandled - print diagnostics then panic
             Debug::Printf("\n[EXCEPTION] #PF at RIP=0x%016llx CR2=0x%016llx err=0x%llx\n",
                 frame->Rip, cr2, frame->ErrorCode);
@@ -119,6 +156,8 @@ extern "C" void InterruptDispatch(InterruptFrame* frame) {
                 (frame->ErrorCode & 2) ? "write " : "read ",
                 (frame->ErrorCode & 4) ? "user " : "kernel ");
         } else {
+            // First-chance delivery for other faults (#DE, #UD, #GP, ...).
+            if (DeliverUserException(frame, ExceptionStatus(vec))) return;
             Debug::Printf("\n[EXCEPTION] %s (#%llu) at RIP=0x%016llx err=0x%llx\n",
                 ExceptionName(vec), vec, frame->Rip, frame->ErrorCode);
         }
