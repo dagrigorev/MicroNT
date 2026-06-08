@@ -321,45 +321,66 @@ static void FillMemoryMap(MicroNTBootInfo* bi, EFI_MEMORY_DESCRIPTOR* map,
     PrintDec(totalMB); Print(" MB available\n");
 }
 
-static void SelectFullHdGopMode(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
-    if (!gop || !gop->Mode || !gop->QueryMode || !gop->SetMode) return;
+// Auto-fit the desktop to the display: pick the largest GOP mode within a
+// safe ceiling.  In VirtualBox the available modes follow the EFI graphics
+// resolution (VBoxInternal2/EfiGraphicsResolution extradata), so setting that
+// to match the window makes the guest fill it at boot.  (Live resize while the
+// VM runs needs a guest GPU driver -- a separate milestone.)
+//
+// Ceiling 1920x1200: the text console grid is capped at 256x64 cells
+// (2048x1024 px); the desktop itself scales to any framebuffer size.
+static void SelectBestGopMode(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
+    if (!gop || !gop->Mode || !gop->Mode->Info || !gop->QueryMode ||
+        !gop->SetMode) return;
 
-    UINT32 fullHdMode = 0xFFFFFFFFu;
+    const UINT32 MAX_W = 1920, MAX_H = 1200;
+
+    // Honor the resolution the firmware already booted in -- in VirtualBox this
+    // is driven by VBoxInternal2/EfiGraphicsResolution, so the user fits the
+    // desktop to the window by setting that. Only override if it is too small.
+    UINT32 curW = gop->Mode->Info->HorizontalResolution;
+    UINT32 curH = gop->Mode->Info->VerticalResolution;
+    if (curW >= 640 && curH >= 480 && curW <= MAX_W && curH <= MAX_H) {
+        Print("[BL] GOP auto-fit: honoring firmware mode "); PrintDec(curW);
+        Print("x"); PrintDec(curH); Print("\n");
+        return;
+    }
+
+    // Firmware defaulted to something tiny or oversized -- pick the largest
+    // mode within the safe ceiling.
     UINT32 bestMode = gop->Mode->Mode;
     UINT32 bestPixels = 0;
+    UINT32 bestW = curW, bestH = curH;
 
     for (UINT32 mode = 0; mode < gop->Mode->MaxMode; ++mode) {
         UINTN infoSize = 0;
         EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* info = nullptr;
         EFI_STATUS st = gop->QueryMode(gop, mode, &infoSize, &info);
         if (EFI_IS_ERROR(st) || !info) continue;
-        if (info->PixelFormat == PixelBltOnly) continue;
+        if (info->PixelFormat == PixelBltOnly) { gBS->FreePool(info); continue; }
 
         UINT32 w = info->HorizontalResolution;
         UINT32 h = info->VerticalResolution;
         UINT32 pixels = w * h;
-        if (w == 1920 && h == 1080) {
-            fullHdMode = mode;
-            gBS->FreePool(info);
-            break;
-        }
-        if (pixels > bestPixels && w <= 1920 && h <= 1080) {
+        if (w <= MAX_W && h <= MAX_H && pixels > bestPixels) {
             bestPixels = pixels;
             bestMode = mode;
+            bestW = w;
+            bestH = h;
         }
         gBS->FreePool(info);
     }
 
-    UINT32 target = (fullHdMode != 0xFFFFFFFFu) ? fullHdMode : bestMode;
-    if (target != gop->Mode->Mode) {
-        EFI_STATUS st = gop->SetMode(gop, target);
+    if (bestMode != gop->Mode->Mode) {
+        EFI_STATUS st = gop->SetMode(gop, bestMode);
         if (!EFI_IS_ERROR(st)) {
-            Print("[BL] GOP mode selected: ");
-            if (fullHdMode != 0xFFFFFFFFu) Print("1920x1080\n");
-            else Print("best available <= 1920x1080\n");
+            Print("[BL] GOP auto-fit: upgraded to "); PrintDec(bestW);
+            Print("x"); PrintDec(bestH); Print("\n");
         } else {
             Print("[BL] GOP SetMode failed, keeping firmware mode\n");
         }
+    } else {
+        Print("[BL] GOP keeping firmware mode\n");
     }
 }
 
@@ -483,7 +504,7 @@ extern "C" EFI_STATUS EfiMain(EFI_HANDLE ImageHandle,
         EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = nullptr;
         EFI_STATUS gs = gBS->LocateProtocol(&gopGuid, nullptr, (void**)&gop);
         if (!EFI_IS_ERROR(gs) && gop && gop->Mode) {
-            SelectFullHdGopMode(gop);
+            SelectBestGopMode(gop);
             bi->fb_base   = (unsigned long long)gop->Mode->FrameBufferBase;
             bi->fb_width  = gop->Mode->Info->HorizontalResolution;
             bi->fb_height = gop->Mode->Info->VerticalResolution;

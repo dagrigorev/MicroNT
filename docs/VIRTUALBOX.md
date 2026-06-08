@@ -14,6 +14,27 @@
 | Audio | Disabled |
 | USB | Disabled |
 
+## Display resolution / screen auto-fit
+
+The desktop fills whatever resolution the firmware presents. At boot the
+UEFI bootloader (`SelectBestGopMode`) honors the EFI graphics mode and only
+overrides it if it is tiny or larger than the safe ceiling (1920x1200). In
+VirtualBox that mode is controlled by an extradata key, so to fit the guest
+desktop to the size you want:
+
+```powershell
+VBoxManage setextradata MicroNT-Test "VBoxInternal2/EfiGraphicsResolution" "1600x900"
+```
+
+The VM-creation scripts set this to `1920x1080` by default. Verified working
+at 1280x720, 1600x900 and 1920x1080; the mouse range and centered taskbar
+scale to the chosen size automatically.
+
+**Limitation:** live resize while the VM is running (dragging the window to
+reflow the guest) needs a guest GPU driver for the virtual adapter
+(VBoxSVGA/VMSVGA HGSMI), which MicroNT does not implement yet. Set the
+resolution before booting. A VMSVGA driver is a planned milestone.
+
 ## Using the Script
 
 ```powershell

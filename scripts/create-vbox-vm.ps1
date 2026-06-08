@@ -105,6 +105,12 @@ Invoke-VBox modifyvm $UUID --audio-driver none | Out-Null
 Invoke-VBox modifyvm $UUID --usb off | Out-Null
 Invoke-VBox modifyvm $UUID --graphicscontroller vmsvga | Out-Null
 
+# Auto-fit: the bootloader picks the largest GOP mode, and VirtualBox EFI
+# exposes the mode named here. Change this to the size you want the desktop
+# to fill (e.g. 1600x900, 1280x720). Live resize-on-drag needs a guest GPU
+# driver, which MicroNT does not have yet.
+Invoke-VBox setextradata $UUID 'VBoxInternal2/EfiGraphicsResolution' '1920x1080' | Out-Null
+
 # Serial COM1 to file
 New-Item -ItemType Directory -Force (Split-Path $SerialLog) | Out-Null
 Invoke-VBox modifyvm $UUID --uart1 0x3F8 4 | Out-Null

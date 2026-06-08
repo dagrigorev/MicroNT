@@ -85,10 +85,19 @@ static void ApplyPacket() {
 
     s_x += dx;
     s_y -= dy;
+
+    // Clamp to the live framebuffer (minus the 24x32 cursor) so the pointer
+    // tracks correctly at whatever resolution the display auto-fit selected.
+    i32 max_x = 1896, max_y = 1048;
+    VGA::FramebufferInfo fb{};
+    if (VGA::GetFramebufferInfo(fb)) {
+        max_x = fb.Width  > 24 ? (i32)fb.Width  - 24 : 0;
+        max_y = fb.Height > 32 ? (i32)fb.Height - 32 : 0;
+    }
     if (s_x < 0) s_x = 0;
     if (s_y < 0) s_y = 0;
-    if (s_x > 1896) s_x = 1896;
-    if (s_y > 1048) s_y = 1048;
+    if (s_x > max_x) s_x = max_x;
+    if (s_y > max_y) s_y = max_y;
 
     Packet packet{};
     packet.DeltaX = dx;

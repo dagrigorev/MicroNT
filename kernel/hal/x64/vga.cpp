@@ -984,7 +984,7 @@ void StartDesktop(const UXTHEME::Theme& theme,
     for (u32 i = 0; i < hlen && hstart + i < s_cols; ++i)
         s_cells[0][hstart + i] = { (u8)hdr[i], 0x1F };
     RedrawAll();
-    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   1920 x 1080 desktop target", 0x000000, theme.WindowFrame);
+    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   MicroNT desktop session", 0x000000, theme.WindowFrame);
     MoveMouseCursor(s_fb_w > 240 ? s_fb_w - 220 : win_x + win_w - 82,
                     h1 > 140 ? h1 - 120 : win_y + 74);
 }
