@@ -77,6 +77,12 @@ static KPipe g_pipes[4];
 static constexpr u64 PIPE_HANDLE_BASE = 0x80;
 constexpr u64 NT_CREATE_NAMED_PIPE = 33;
 
+// Windows NT information queries (leverage the TEB/PEB/KUSER environment).
+constexpr u64 NT_QUERY_PROCESS_INFO = 34;  // NtQueryInformationProcess
+constexpr u64 NT_QUERY_THREAD_INFO  = 35;  // NtQueryInformationThread
+constexpr u64 NT_QUERY_SYSTEM_TIME  = 36;  // NtQuerySystemTime
+constexpr u64 NT_QUERY_PERF_COUNTER = 37;  // NtQueryPerformanceCounter
+
 // M30: writable files delegated to VFS::WNode table.
 // Handle range 0x40-0x4F maps to VFS WNode indices 0-15.
 static constexpr u64 WFILE_HANDLE_BASE = 0x40;
@@ -165,6 +171,11 @@ static bool WriteUserByte(u64 pml4, u64 user_va, u8 val) {
     if (!phys) return false;
     *reinterpret_cast<u8*>(phys) = val;
     return true;
+}
+
+// Write a little-endian u64 to user memory via explicit PML4 walk.
+static void WriteUserU64(u64 pml4, u64 user_va, u64 v) {
+    for (int i = 0; i < 8; ++i) WriteUserByte(pml4, user_va + i, (u8)(v >> (i * 8)));
 }
 
 // Read up to 'len' bytes from user virtual address into kernel buffer.
@@ -738,6 +749,12 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                               "OSBuild=%u\r\n",
                               gsbase, teb_self, peb_ptr, peb_build);
             }
+
+            // Verify the NtQueryInformation* data for this live user thread.
+            Debug::Printf("[NTINFO] ProcessBasicInfo PEB=0x%llx PID=%u | "
+                          "ThreadBasicInfo TEB=0x%llx CID=%u.%u\r\n",
+                          t->Process->PebVa, t->Process->Pid,
+                          t->TebVa, t->Process->Pid, t->Tid);
         } else if (a1 == 1) {
             // Memory stats: provide enough data for visual bar rendering
             u64 free_pages  = (u64)PMM::FreePages();
@@ -794,6 +811,54 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         for (usize i=0; i<len; ++i) WriteUserByte(pml4, a2+i, (u8)str[i]);
         WriteUserByte(pml4, a2+len, 0);
         return (u64)len;
+    }
+
+    case NT_QUERY_PROCESS_INFO: {
+        // NtQueryInformationProcess. a1=class, a2=buf, a3=len.
+        // Class 0 = ProcessBasicInformation (PROCESS_BASIC_INFORMATION, x64).
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return STATUS_UNSUCCESSFUL;
+        u64 pml4 = t->Process->Cr3;
+        if (a1 == 0 && a3 >= 48) {
+            for (u32 i = 0; i < 48; ++i) WriteUserByte(pml4, a2 + i, 0);
+            WriteUserU64(pml4, a2 + 0x08, t->Process->PebVa);  // PebBaseAddress
+            WriteUserU64(pml4, a2 + 0x20, t->Process->Pid);    // UniqueProcessId
+            return STATUS_SUCCESS;
+        }
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    case NT_QUERY_THREAD_INFO: {
+        // NtQueryInformationThread. a1=class, a2=buf, a3=len.
+        // Class 0 = ThreadBasicInformation (THREAD_BASIC_INFORMATION, x64).
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return STATUS_UNSUCCESSFUL;
+        u64 pml4 = t->Process->Cr3;
+        if (a1 == 0 && a3 >= 48) {
+            for (u32 i = 0; i < 48; ++i) WriteUserByte(pml4, a2 + i, 0);
+            WriteUserU64(pml4, a2 + 0x08, t->TebVa);           // TebBaseAddress
+            WriteUserU64(pml4, a2 + 0x10, t->Process->Pid);    // ClientId.UniqueProcess
+            WriteUserU64(pml4, a2 + 0x18, t->Tid);             // ClientId.UniqueThread
+            return STATUS_SUCCESS;
+        }
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    case NT_QUERY_SYSTEM_TIME: {
+        // NtQuerySystemTime. a1 = user LARGE_INTEGER*. 100 ns units since boot.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process || !a1) return STATUS_UNSUCCESSFUL;
+        WriteUserU64(t->Process->Cr3, a1, (u64)HAL::PitTicks() * 100000ULL);
+        return STATUS_SUCCESS;
+    }
+
+    case NT_QUERY_PERF_COUNTER: {
+        // NtQueryPerformanceCounter. a1 = counter*, a2 = optional frequency*.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process || !a1) return STATUS_UNSUCCESSFUL;
+        WriteUserU64(t->Process->Cr3, a1, (u64)HAL::PitTicks());
+        if (a2) WriteUserU64(t->Process->Cr3, a2, 100ULL);   // PIT = 100 Hz
+        return STATUS_SUCCESS;
     }
 
     case NT_DELAY_EXECUTION:
