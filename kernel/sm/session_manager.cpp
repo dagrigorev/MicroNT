@@ -136,7 +136,15 @@ static bool WindowManagerStart(InteractiveSession& session) {
 }
 
 static bool DesktopModelStart(InteractiveSession& session) {
-    return DESKTOPMODEL::BuildXpRedesignLayout(s_desktop_layout, s_desktop_scene);
+    if (!DESKTOPMODEL::BuildXpRedesignLayout(s_desktop_layout, s_desktop_scene))
+        return false;
+    // Pin the layout to the real display target so the renderer and the pointer
+    // hit-test share one set of screen dimensions.
+    if (s_display_target.MetricsReady) {
+        s_desktop_layout.ScreenW = s_display_target.Mode.Width;
+        s_desktop_layout.ScreenH = s_display_target.Mode.Height;
+    }
+    return true;
 }
 
 static bool InputHostStart(InteractiveSession& session) {
