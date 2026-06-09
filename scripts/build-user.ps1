@@ -111,4 +111,10 @@ Build-UserDll 'user\kernel32\kernel32.cpp' 'kernel32' $null
 Build-UserDll 'user\test\extra.cpp' 'extra' '0x190000000'
 Build-UserExe 'user\test\win32test.cpp' 'win32test' 'Entry' @((Join-Path $Build 'kernel32.lib'))
 
+# winapp.exe: a console app that is loaded from the VHD, not embedded. Copy it
+# into tools/ where mkdisk.py picks up *.exe into /boot/ on the disk image.
+Build-UserExe 'user\test\winapp.cpp' 'winapp' 'Entry' @((Join-Path $Build 'kernel32.lib'))
+Copy-Item (Join-Path $Build 'winapp.pe') (Join-Path $Root 'tools\winapp.exe') -Force
+Write-Host "[OK] tools\winapp.exe (-> VHD /boot/winapp.exe)" -ForegroundColor Green
+
 Write-Host "`n[SUCCESS] user PE blobs generated." -ForegroundColor Green

@@ -1414,6 +1414,51 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
+    // DISKEXE: load a stock console EXE from the VHD (not an embedded blob),
+    // linking kernel32 -- the real "run an on-disk Windows binary" path.
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        usize wsz = 0;
+        const u8* wbin = VFS::FindFile("winapp.exe", &wsz);
+        if (wbin && wsz > 64) {
+            // ImageBase from the PE optional header (e_lfanew -> opt+24).
+            u32 e_lf = *reinterpret_cast<const u32*>(wbin + 0x3C);
+            u64 base = *reinterpret_cast<const u64*>(wbin + e_lf + 4 + 20 + 24);
+
+            u64 cr3 = VMM::CreateUserPml4();
+            KASSERT(cr3);
+            KProcess* proc = PS::CreateProcess("winapp.exe", cr3);
+            KASSERT(proc);
+
+            u64 k32_entry = 0;
+            NTSTATUS st = LDR::LoadAndRegister("kernel32.dll", s_kernel32_pe,
+                s_kernel32_pe_size, cr3, s_kernel32_image_base, &k32_entry);
+            KASSERT(NT_SUCCESS(st));
+
+            u64 entry_va = 0;
+            st = LDR::LoadPe(wbin, wsz, cr3, base, &entry_va);
+            KASSERT(NT_SUCCESS(st));
+
+            constexpr u64 STK_VA = 0x141000000ULL;
+            u64 stk_phys = PMM::AllocPage();
+            KASSERT(stk_phys);
+            for (u32 i = 0; i < PAGE_SIZE; ++i) reinterpret_cast<u8*>(stk_phys)[i] = 0;
+            KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+
+            KThread* th = PS::CreateUserThread(proc, "winapp.exe!Entry",
+                                               entry_va, STK_VA + PAGE_SIZE);
+            KASSERT(th);
+            Sched::AddThread(th);
+            while (!g_m8_write_ok) { Sched::Schedule(); }
+        } else {
+            Debug::Print("[WARN ] winapp.exe not on VHD - skipping DISKEXE\r\n");
+        }
+        Debug::Print("[MicroNT] DISKEXE ready\r\n");
+    }
+
+    // ----------------------------------------------------------
     // Ready
     // ----------------------------------------------------------
     Debug::Print("[MicroNT] Ready\r\n");
