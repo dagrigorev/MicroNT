@@ -394,6 +394,13 @@ static void HandleShellClick(SHELLINPUT::HitTargetKind target, u32 index) {
     }
 }
 
+// Window-drag state: a window is dragged by holding the left button on its
+// title bar (the 32 px strip below the top edge, excluding the [x] button).
+static bool s_dragging = false;
+static u32  s_drag_win = 0;
+static i32  s_drag_off_x = 0;
+static i32  s_drag_off_y = 0;
+
 bool PumpInteractiveInput() {
     if (!s_pointer_state.HitTestingReady || !s_desktop_layout.Ready) return false;
 
@@ -403,14 +410,52 @@ bool PumpInteractiveInput() {
         i32 mx = 0, my = 0;
         if (!MOUSE::CurrentPosition(&mx, &my)) break;
 
-        // Any mouse packet moved/clicked the cursor, which the IRQ has already
-        // drawn into the framebuffer, so the frame needs flushing.
+        // Any mouse packet moved the cursor, which the IRQ already drew, so the
+        // frame needs flushing.
         changed = true;
 
+        bool prev_down = s_pointer_state.LeftButtonDown;
         SHELLINPUT::PointerEvent event = SHELLINPUT::ProcessPointer(
             s_pointer_state, s_desktop_layout,
             static_cast<u32>(mx), static_cast<u32>(my), packet.Left);
+        bool down_now = packet.Left;
 
+        // Active drag: move the window with the cursor (grab point fixed),
+        // or end the drag on release.
+        if (s_dragging) {
+            if (down_now && s_drag_win < s_desktop_layout.WindowCount) {
+                DESKTOPMODEL::ShellWindow& w = s_desktop_layout.Windows[s_drag_win];
+                i32 nx = mx - s_drag_off_x;
+                i32 ny = my - s_drag_off_y;
+                w.X = nx > 0 ? (u32)nx : 0;
+                w.Y = ny > 0 ? (u32)ny : 0;
+                RepaintDesktop();
+            } else {
+                s_dragging = false;
+                RepaintDesktop();
+            }
+            continue;
+        }
+
+        // Press on a title bar -> raise the window and begin dragging it.
+        if (!prev_down && down_now &&
+            s_pointer_state.HotTarget == SHELLINPUT::HitTargetKind::ShellWindow) {
+            u32 i = s_pointer_state.TargetIndex;
+            if (i < s_desktop_layout.WindowCount &&
+                (u32)my < s_desktop_layout.Windows[i].Y + 32) {
+                FocusWindow(i);                          // raise to top
+                s_drag_win = s_desktop_layout.WindowCount - 1;
+                const DESKTOPMODEL::ShellWindow& w =
+                    s_desktop_layout.Windows[s_drag_win];
+                s_drag_off_x = mx - (i32)w.X;
+                s_drag_off_y = my - (i32)w.Y;
+                s_dragging = true;
+                RepaintDesktop();
+                continue;
+            }
+        }
+
+        // Otherwise a normal release-edge click.
         if (event.Clicked) {
             HandleShellClick(event.Target, event.TargetIndex);
         }
