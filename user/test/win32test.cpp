@@ -14,6 +14,8 @@ __declspec(dllimport) void* GetModuleHandleW(const void*);
 __declspec(dllimport) void* CreateFileA(const char*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*);
 __declspec(dllimport) int   ReadFile(void*, void*, uint32_t, uint32_t*, void*);
 __declspec(dllimport) int   CloseHandle(void*);
+__declspec(dllimport) void* GetModuleHandleA(const char*);
+__declspec(dllimport) void* GetProcAddress(void*, const char*);
 }
 
 enum { STD_OUTPUT_HANDLE = (uint32_t)-11 };
@@ -49,6 +51,19 @@ extern "C" void Entry() {
         WriteFile(out, hdr, rd, &written, nullptr);
         WriteFile(out, "\n", 1, &written, nullptr);
         CloseHandle(f);
+    }
+
+    // Dynamic linking: resolve kernel32 base by name, GetProcAddress a function,
+    // and call it through the returned pointer.
+    void* k32 = GetModuleHandleA("kernel32.dll");
+    if (k32) {
+        typedef uint32_t (*tickfn)();
+        tickfn gt = (tickfn)GetProcAddress(k32, "GetTickCount");
+        if (gt) {
+            (void)gt();   // call the dynamically-resolved function
+            const char* p = "PROCADDR OK: GetModuleHandle+GetProcAddress+call\n";
+            WriteFile(out, p, slen(p), &written, nullptr);
+        }
     }
 
     // Touch more imports so the IAT carries several entries.

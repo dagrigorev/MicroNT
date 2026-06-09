@@ -7,6 +7,7 @@ using i64 = int64_t;
 using u64 = uint64_t;
 using u32 = uint32_t;
 using u16 = uint16_t;
+using u8  = uint8_t;
 
 // MicroNT syscall ABI: number in RAX, args RDI/RSI/RDX, result RAX.
 static inline i64 sc(i64 n, i64 a1, i64 a2, i64 a3) {
@@ -32,7 +33,12 @@ static inline i64 sc4(i64 n, i64 a1, i64 a2, i64 a3, i64 a4) {
 
 enum { NT_TERMINATE_THREAD = 1, NT_WRITE_FILE = 4,
        NT_CREATE_FILE = 6, NT_READ_FILE = 7, NT_CLOSE_HANDLE = 8,
-       NT_ALLOC_VM = 10 };
+       NT_ALLOC_VM = 10, NT_GET_MODULE_BASE = 41 };
+
+static bool streq(const char* a, const char* b) {
+    while (*a && *a == *b) { ++a; ++b; }
+    return *a == *b;
+}
 
 // PEB pointer from the TEB (GS:[0x60]).
 static inline u64 peb() {
@@ -138,6 +144,35 @@ __declspec(dllexport) int ReadFile(void* hFile, void* buf, u32 len,
 __declspec(dllexport) int CloseHandle(void* hObject) {
     sc(NT_CLOSE_HANDLE, (i64)(u64)hObject, 0, 0);
     return 1;
+}
+
+// --- Dynamic linking ---
+// GetModuleHandleA(NULL) -> own image; by name -> loader registry base.
+__declspec(dllexport) void* GetModuleHandleA(const char* name) {
+    if (!name)
+        return reinterpret_cast<void*>(*reinterpret_cast<volatile u64*>(peb() + 0x10));
+    i64 b = sc(NT_GET_MODULE_BASE, (i64)(u64)name, (i64)a_strlen(name), 0);
+    return reinterpret_cast<void*>((u64)b);
+}
+
+// Parse a mapped module's PE export directory and return the named proc.
+__declspec(dllexport) void* GetProcAddress(void* hModule, const char* proc) {
+    u8* base = reinterpret_cast<u8*>(hModule);
+    if (!base || !proc) return nullptr;
+    u32 e_lfanew = *reinterpret_cast<u32*>(base + 0x3C);
+    u8* opt = base + e_lfanew + 24;
+    u32 exp_rva = *reinterpret_cast<u32*>(opt + 112);   // DataDirectory[0]
+    if (!exp_rva) return nullptr;
+    u8* ed = base + exp_rva;
+    u32 num_names = *reinterpret_cast<u32*>(ed + 24);
+    u32* funcs = reinterpret_cast<u32*>(base + *reinterpret_cast<u32*>(ed + 28));
+    u32* names = reinterpret_cast<u32*>(base + *reinterpret_cast<u32*>(ed + 32));
+    u16* ords  = reinterpret_cast<u16*>(base + *reinterpret_cast<u32*>(ed + 36));
+    for (u32 i = 0; i < num_names; ++i) {
+        const char* en = reinterpret_cast<const char*>(base + names[i]);
+        if (streq(en, proc)) return base + funcs[ords[i]];
+    }
+    return nullptr;
 }
 
 } // extern "C"

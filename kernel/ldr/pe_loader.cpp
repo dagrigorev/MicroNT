@@ -165,6 +165,22 @@ static NTSTATUS MapSections(const u8* base, usize pe_size,
     const u8* opt  = pe + 20;
     const u8* shdrs = opt + opt_sz;
 
+    // Map the PE headers at the image base (read-only, user). Windows maps the
+    // headers here; GetProcAddress / RtlImageNtHeader read e_lfanew and the data
+    // directories from base+0. Sections begin at RVA >= 0x1000 so no overlap.
+    {
+        u64 hphys = PMM::AllocPage();
+        if (!hphys) return STATUS_INSUFFICIENT_RESOURCES;
+        u8* hp = reinterpret_cast<u8*>(hphys);
+        usize hcopy = pe_size < PAGE_SIZE ? pe_size : PAGE_SIZE;
+        for (usize i=0;i<PAGE_SIZE;++i) hp[i] = (i < hcopy) ? base[i] : 0;
+        if (!VMM::MapPageInto(pml4_phys, load_base, hphys,
+                              VMM::PTE_PRESENT | VMM::PTE_USER)) {
+            PMM::FreePage(hphys);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+    }
+
     for (u16 s=0; s<num_sects; ++s) {
         const u8* sh = shdrs + s*40;
         u32 v_size  = *reinterpret_cast<const u32*>(sh+ 8);
@@ -342,6 +358,11 @@ NTSTATUS LoadAndRegister(const char* name,
     if (NT_SUCCESS(st))
         RegisterModule(name, load_base, static_cast<const u8*>(pe_data), pe_size);
     return st;
+}
+
+u64 GetModuleBase(const char* name) {
+    Module* m = FindModule(name);
+    return m ? m->image_base : 0;
 }
 
 } // namespace LDR

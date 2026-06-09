@@ -148,4 +148,7 @@ NTSTATUS LoadAndRegister(const char* name,
                           const void* pe_data, usize pe_size,
                           u64 pml4_phys, u64 load_base, u64* entry_out);
 
+// Return a registered module's image base by name (for GetModuleHandle), or 0.
+u64 GetModuleBase(const char* name);
+
 } // namespace LDR

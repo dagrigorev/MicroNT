@@ -85,6 +85,7 @@ constexpr u64 NT_QUERY_PERF_COUNTER = 37;  // NtQueryPerformanceCounter
 constexpr u64 NT_CREATE_FILE_SECTION = 38; // NtCreateSection over a VFS file
 constexpr u64 NT_PROTECT_VM          = 39; // NtProtectVirtualMemory
 constexpr u64 NT_QUERY_VM            = 40; // NtQueryVirtualMemory
+constexpr u64 NT_GET_MODULE_BASE     = 41; // module base by name (GetModuleHandle)
 
 // M30: writable files delegated to VFS::WNode table.
 // Handle range 0x40-0x4F maps to VFS WNode indices 0-15.
@@ -965,6 +966,16 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             WriteUserU32(pml4, a2 + 0x20, 0x10000);    // State = MEM_FREE
         }
         return STATUS_SUCCESS;
+    }
+
+    case NT_GET_MODULE_BASE: {
+        // Resolve a loaded module's image base by name (GetModuleHandle).
+        // a1=name ptr, a2=len.
+        char name[40] = {};
+        usize n = a2 < 39 ? (usize)a2 : 39;
+        usize got = ReadUserBytes(a1, reinterpret_cast<u8*>(name), n);
+        name[got] = 0;
+        return LDR::GetModuleBase(name);
     }
 
     case NT_DELAY_EXECUTION:

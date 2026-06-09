@@ -207,10 +207,16 @@ bool MapSharedUserData(u64 phys) {
 
     u64 e1 = pml4[pml4_idx(VA)];
     if (!(e1 & PTE_PRESENT)) return false;
+    // Every level must carry the USER bit for ring-3 to reach the page. The
+    // bootloader's identity PML4E/PDPTE are supervisor-only; OR in USER here so
+    // ring-3 can read KUSER_SHARED_DATA (the per-page USER bits below still gate
+    // which 4 KB pages are actually exposed).
+    pml4[pml4_idx(VA)] = e1 | PTE_USER;
     auto* pdpt = reinterpret_cast<u64*>(e1 & PTE_ADDR_MASK);
 
     u64 e2 = pdpt[pdpt_idx(VA)];
     if (!(e2 & PTE_PRESENT)) return false;
+    pdpt[pdpt_idx(VA)] = e2 | PTE_USER;
     auto* pd = reinterpret_cast<u64*>(e2 & PTE_ADDR_MASK);
 
     u64 e3 = pd[pd_idx(VA)];
