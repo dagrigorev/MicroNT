@@ -20,7 +20,19 @@ static inline i64 sc(i64 n, i64 a1, i64 a2, i64 a3) {
     return r;
 }
 
-enum { NT_TERMINATE_THREAD = 1, NT_WRITE_FILE = 4, NT_ALLOC_VM = 10 };
+// 4-arg variant: a4 goes in r10 (the kernel's syscall entry reads it there).
+static inline i64 sc4(i64 n, i64 a1, i64 a2, i64 a3, i64 a4) {
+    i64 r;
+    register i64 r10 __asm__("r10") = a4;
+    __asm__ volatile("syscall" : "=a"(r)
+                     : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10)
+                     : "rcx", "r11", "r8", "r9", "memory");
+    return r;
+}
+
+enum { NT_TERMINATE_THREAD = 1, NT_WRITE_FILE = 4,
+       NT_CREATE_FILE = 6, NT_READ_FILE = 7, NT_CLOSE_HANDLE = 8,
+       NT_ALLOC_VM = 10 };
 
 // PEB pointer from the TEB (GS:[0x60]).
 static inline u64 peb() {
@@ -104,6 +116,28 @@ __declspec(dllexport) const u16* GetCommandLineW() {
     u64 params = *reinterpret_cast<volatile u64*>(peb() + 0x20);
     if (!params) return nullptr;
     return reinterpret_cast<const u16*>(*reinterpret_cast<volatile u64*>(params + 0x78));
+}
+
+// --- File I/O over NtCreateFile / NtReadFile / NtClose ---
+static u32 a_strlen(const char* s) { u32 n = 0; while (s[n]) ++n; return n; }
+
+__declspec(dllexport) void* CreateFileA(const char* name, u32 /*access*/,
+        u32 /*share*/, void* /*sa*/, u32 /*disp*/, u32 /*flags*/, void* /*tmpl*/) {
+    i64 h = sc(NT_CREATE_FILE, (i64)(u64)name, (i64)a_strlen(name), 0);
+    return h > 0 ? reinterpret_cast<void*>((u64)h)
+                 : reinterpret_cast<void*>((u64)-1);   // INVALID_HANDLE_VALUE
+}
+
+__declspec(dllexport) int ReadFile(void* hFile, void* buf, u32 len,
+                                   u32* read, void* /*overlapped*/) {
+    i64 n = sc4(NT_READ_FILE, (i64)(u64)hFile, (i64)(u64)buf, 0 /*offset*/, (i64)len);
+    if (read) *read = (u32)n;
+    return 1;
+}
+
+__declspec(dllexport) int CloseHandle(void* hObject) {
+    sc(NT_CLOSE_HANDLE, (i64)(u64)hObject, 0, 0);
+    return 1;
 }
 
 } // extern "C"
