@@ -3,6 +3,7 @@
 #include "../include/hal.h"
 #include "../include/pe.h"
 #include "../ldr/ntdll_pe.h"
+#include "../ldr/kernel32_pe.h"
 #include "../include/debug.h"
 #include "../include/process.h"
 #include "../include/ntstatus.h"
@@ -494,6 +495,45 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
                         }
                         KThread* ct2=PS::CreateUserThread(cp,bgname,entry_va,stk+CSTK*PAGE_SIZE);
                         if (ct2) { Sched::AddThread(ct2); kprint("Background process started.", 0x0A); }
+                        else kprint("Thread creation failed.", 0x0C);
+                    } else kprint("PE load failed.", 0x0C);
+                } else kprint("Process creation failed.", 0x0C);
+            }
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
+        // winexec <file> -- load an on-disk PE at its preferred base, link
+        // kernel32, and run it (a real Win32 binary launcher).
+        if (n > 8 && kstrcmp(linebuf, "winexec ", 8)) {
+            char wname[64] = {};
+            usize wl = n - 8 < 63 ? n - 8 : 63;
+            for (usize i = 0; i < wl; ++i) wname[i] = linebuf[8 + i];
+            usize fsz = 0;
+            const u8* fd = VFS::FindFile(wname, &fsz);
+            if (!fd || fsz < 64) {
+                kprint("File not found.", 0x0C);
+            } else {
+                u32 e_lf = *reinterpret_cast<const u32*>(fd + 0x3C);
+                u64 base = *reinterpret_cast<const u64*>(fd + e_lf + 4 + 20 + 24);
+                u64 ccr3 = VMM::CreateUserPml4();
+                KProcess* cp = ccr3 ? PS::CreateProcess(wname, ccr3) : nullptr;
+                if (cp) {
+                    u64 k = 0;
+                    LDR::LoadAndRegister("kernel32.dll", s_kernel32_pe,
+                        s_kernel32_pe_size, ccr3, s_kernel32_image_base, &k);
+                    u64 entry = 0;
+                    NTSTATUS st = LDR::LoadPe(fd, fsz, ccr3, base, &entry);
+                    if (NT_SUCCESS(st) && entry) {
+                        u64 stk = base + 0x1000000ULL;
+                        u64 fl = VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER;
+                        for (usize i = 0; i < 4; ++i) {
+                            u64 pp = PMM::AllocPage(); if (!pp) break;
+                            u8* pb = reinterpret_cast<u8*>(pp);
+                            for (usize j = 0; j < PAGE_SIZE; ++j) pb[j] = 0;
+                            VMM::MapPageInto(ccr3, stk + i * PAGE_SIZE, pp, fl);
+                        }
+                        KThread* ct = PS::CreateUserThread(cp, wname, entry,
+                                                           stk + 4 * PAGE_SIZE);
+                        if (ct) { Sched::AddThread(ct); kprint("Launched.", 0x0A); }
                         else kprint("Thread creation failed.", 0x0C);
                     } else kprint("PE load failed.", 0x0C);
                 } else kprint("Process creation failed.", 0x0C);
