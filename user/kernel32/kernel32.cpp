@@ -6,6 +6,7 @@
 using i64 = int64_t;
 using u64 = uint64_t;
 using u32 = uint32_t;
+using u16 = uint16_t;
 
 // MicroNT syscall ABI: number in RAX, args RDI/RSI/RDX, result RAX.
 static inline i64 sc(i64 n, i64 a1, i64 a2, i64 a3) {
@@ -19,7 +20,14 @@ static inline i64 sc(i64 n, i64 a1, i64 a2, i64 a3) {
     return r;
 }
 
-enum { NT_TERMINATE_THREAD = 1, NT_WRITE_FILE = 4 };
+enum { NT_TERMINATE_THREAD = 1, NT_WRITE_FILE = 4, NT_ALLOC_VM = 10 };
+
+// PEB pointer from the TEB (GS:[0x60]).
+static inline u64 peb() {
+    u64 p;
+    __asm__ volatile("movq %%gs:0x60, %0" : "=r"(p));
+    return p;
+}
 
 extern "C" {
 
@@ -68,6 +76,34 @@ __declspec(dllexport) u32 GetTickCount() {
     u64 lo  = k[0x320 / 4];
     u64 mul = k[0x004 / 4];
     return (u32)((lo * mul) >> 24);
+}
+
+// Heap: PEB.ProcessHeap (PEB+0x30) is the default heap handle. HeapAlloc backs
+// each allocation with NtAllocateVirtualMemory (zeroed). HeapFree is a no-op
+// (the kernel allocator is bump-only for now).
+__declspec(dllexport) void* GetProcessHeap() {
+    return reinterpret_cast<void*>(*reinterpret_cast<volatile u64*>(peb() + 0x30));
+}
+__declspec(dllexport) void* HeapAlloc(void* /*hHeap*/, u32 /*flags*/, u64 bytes) {
+    if (!bytes) bytes = 1;
+    i64 va = sc(NT_ALLOC_VM, (i64)bytes, 0, 0);
+    return reinterpret_cast<void*>((u64)va);
+}
+__declspec(dllexport) int HeapFree(void* /*hHeap*/, u32 /*flags*/, void* /*mem*/) {
+    return 1;
+}
+
+// GetModuleHandle(NULL) -> the EXE's own base (PEB.ImageBaseAddress @0x10).
+__declspec(dllexport) void* GetModuleHandleW(const void* name) {
+    if (name) return nullptr;
+    return reinterpret_cast<void*>(*reinterpret_cast<volatile u64*>(peb() + 0x10));
+}
+
+// GetCommandLineW -> PEB.ProcessParameters(0x20).CommandLine.Buffer(0x78).
+__declspec(dllexport) const u16* GetCommandLineW() {
+    u64 params = *reinterpret_cast<volatile u64*>(peb() + 0x20);
+    if (!params) return nullptr;
+    return reinterpret_cast<const u16*>(*reinterpret_cast<volatile u64*>(params + 0x78));
 }
 
 } // extern "C"
