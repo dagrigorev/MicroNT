@@ -12,6 +12,7 @@ enum class HitTargetKind : u32 {
     Desktop,
     DesktopIcon,
     ShellWindow,
+    WindowClose,    // the [x] button on a window title bar
     StartButton,
     StartMenu,
     Taskbar,

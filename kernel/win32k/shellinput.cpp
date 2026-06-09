@@ -10,6 +10,7 @@ static const char* HitName(HitTargetKind kind) {
     case HitTargetKind::Desktop: return "desktop";
     case HitTargetKind::DesktopIcon: return "desktop-icon";
     case HitTargetKind::ShellWindow: return "shell-window";
+    case HitTargetKind::WindowClose: return "window-close";
     case HitTargetKind::StartButton: return "start-button";
     case HitTargetKind::StartMenu: return "start-menu";
     case HitTargetKind::Taskbar: return "taskbar";
@@ -67,11 +68,19 @@ static void ResolveHitTarget(PointerState& pointer,
         }
     }
 
-    for (u32 i = 0; i < layout.WindowCount; ++i) {
+    // Windows are drawn in array order (later = on top), so hit-test the
+    // top-most first by iterating in reverse. The [x] close button (top-right
+    // of the 32 px title bar, ~46 px wide) takes priority over the body.
+    for (i32 i = (i32)layout.WindowCount - 1; i >= 0; --i) {
         const DESKTOPMODEL::ShellWindow& win = layout.Windows[i];
+        if (InRect(pointer.X, pointer.Y, win.X + win.Width - 46, win.Y, 46, 32)) {
+            pointer.HotTarget = HitTargetKind::WindowClose;
+            pointer.TargetIndex = (u32)i;
+            return;
+        }
         if (InRect(pointer.X, pointer.Y, win.X, win.Y, win.Width, win.Height)) {
             pointer.HotTarget = HitTargetKind::ShellWindow;
-            pointer.TargetIndex = i;
+            pointer.TargetIndex = (u32)i;
             return;
         }
     }

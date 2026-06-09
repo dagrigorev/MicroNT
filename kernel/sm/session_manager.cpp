@@ -297,38 +297,97 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     return &session;
 }
 
-// Re-publish shell models and repaint after the Start menu open state changes.
-static void ToggleStartMenu() {
-    bool open = !s_desktop_layout.StartMenuOpen;
-    s_desktop_layout.StartMenuOpen = open;
-    s_activation_state.StartMenuOpen = open;
-    s_start_menu.Open = open;
-    Debug::Printf("[SMSS] Session %u Start menu %s\r\n",
-                  s_interactive.SessionId, open ? "opened" : "closed");
-
-    // Repaint the desktop so the menu shows/hides, then restore the cursor at
-    // the logical pointer position (StartDesktop parks it at a default spot).
+// Recompose the desktop and put the cursor back where the pointer is
+// (StartDesktop parks it at a default spot).
+static void RepaintDesktop() {
     DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene,
                              s_display_target, s_desktop_layout, s_theme);
     VGA::MoveMouseCursor(s_pointer_state.X, s_pointer_state.Y);
 }
 
+static void SetStartMenu(bool open) {
+    s_desktop_layout.StartMenuOpen = open;
+    s_activation_state.StartMenuOpen = open;
+    s_start_menu.Open = open;
+}
+
+// Open a cascaded window with the given title (top of the z-order).
+static void OpenWindow(const char* title) {
+    DESKTOPMODEL::DesktopLayout& L = s_desktop_layout;
+    if (L.WindowCount >= 8) {                 // recycle the oldest slot
+        for (u32 i = 1; i < L.WindowCount; ++i) L.Windows[i - 1] = L.Windows[i];
+        --L.WindowCount;
+    }
+    u32 i = L.WindowCount;
+    u32 cascade = i * 28;
+    DESKTOPMODEL::ShellWindow w{};
+    w.Title  = title ? title : "Window";
+    w.Status = "MicroNT window";
+    w.X = 320 + cascade;
+    w.Y = 140 + cascade;
+    w.Width = 560;
+    w.Height = 360;
+    w.Toolbar = true;
+    L.Windows[i] = w;
+    L.WindowCount = i + 1;
+    Debug::Printf("[SMSS] opened window '%s' (%u open)\r\n", w.Title, L.WindowCount);
+}
+
+static void CloseWindow(u32 idx) {
+    DESKTOPMODEL::DesktopLayout& L = s_desktop_layout;
+    if (idx >= L.WindowCount) return;
+    Debug::Printf("[SMSS] closed window '%s'\r\n",
+                  L.Windows[idx].Title ? L.Windows[idx].Title : "?");
+    for (u32 i = idx + 1; i < L.WindowCount; ++i) L.Windows[i - 1] = L.Windows[i];
+    --L.WindowCount;
+}
+
+// Raise a window to the top of the z-order (drawn last / on top).
+static void FocusWindow(u32 idx) {
+    DESKTOPMODEL::DesktopLayout& L = s_desktop_layout;
+    if (idx + 1 >= L.WindowCount) return;     // already on top or invalid
+    DESKTOPMODEL::ShellWindow w = L.Windows[idx];
+    for (u32 i = idx + 1; i < L.WindowCount; ++i) L.Windows[i - 1] = L.Windows[i];
+    L.Windows[L.WindowCount - 1] = w;
+    Debug::Printf("[SMSS] raised window '%s'\r\n", w.Title ? w.Title : "?");
+}
+
+static void ToggleStartMenu() {
+    bool open = !s_desktop_layout.StartMenuOpen;
+    SetStartMenu(open);
+    Debug::Printf("[SMSS] Session %u Start menu %s\r\n",
+                  s_interactive.SessionId, open ? "opened" : "closed");
+    RepaintDesktop();
+}
+
+static const char* const kStartApps[8] = {
+    "Edge", "Files", "Settings", "Store", "Photos", "Mail", "Notepad", "Terminal"
+};
+
 static void HandleShellClick(SHELLINPUT::HitTargetKind target, u32 index) {
+    using K = SHELLINPUT::HitTargetKind;
     switch (target) {
-    case SHELLINPUT::HitTargetKind::StartButton:
+    case K::StartButton:
         ToggleStartMenu();
         break;
-    case SHELLINPUT::HitTargetKind::StartMenu:
-        Debug::Printf("[SMSS] Session %u Start menu item %u activated\r\n",
-                      s_interactive.SessionId, index);
+    case K::StartMenu:                        // launch a pinned app, close menu
+        OpenWindow(kStartApps[index < 8 ? index : 0]);
+        SetStartMenu(false);
+        RepaintDesktop();
         break;
-    case SHELLINPUT::HitTargetKind::DesktopIcon:
-        Debug::Printf("[SMSS] Session %u desktop icon %u activated\r\n",
-                      s_interactive.SessionId, index);
+    case K::DesktopIcon:                      // open a window for the icon
+        if (index < s_desktop_layout.IconCount)
+            OpenWindow(s_desktop_layout.Icons[index].Label);
+        RepaintDesktop();
         break;
-    case SHELLINPUT::HitTargetKind::Taskbar:
-        Debug::Printf("[SMSS] Session %u taskbar button %u activated\r\n",
-                      s_interactive.SessionId, index);
+    case K::WindowClose:                      // close the window
+        CloseWindow(index);
+        RepaintDesktop();
+        break;
+    case K::ShellWindow:                      // raise/focus the window
+    case K::Taskbar:                          // taskbar button -> raise its window
+        FocusWindow(index);
+        RepaintDesktop();
         break;
     default:
         break;
