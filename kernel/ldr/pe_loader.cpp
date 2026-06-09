@@ -365,4 +365,38 @@ u64 GetModuleBase(const char* name) {
     return m ? m->image_base : 0;
 }
 
+// On-demand DLL catalog (name -> blob + preferred base).
+struct CatalogEntry { char name[32]; const u8* data; usize size; u64 base; };
+static CatalogEntry s_catalog[16];
+static u32          s_catalog_count = 0;
+
+void AddCatalog(const char* name, const void* pe_data, usize pe_size, u64 base) {
+    if (s_catalog_count >= 16) return;
+    auto& c = s_catalog[s_catalog_count++];
+    usize n = strlen_s(name); if (n >= 32) n = 31;
+    for (usize i=0;i<n;++i) c.name[i]=name[i];
+    c.name[n]='\0';
+    c.data = static_cast<const u8*>(pe_data);
+    c.size = pe_size;
+    c.base = base;
+    KDBG_TRACE("LDR: catalog '%s' base=0x%llx", name, base);
+}
+
+u64 LoadLibrary(const char* name, u64 pml4_phys) {
+    // Already registered (e.g. mapped at process creation)? Return its base.
+    if (Module* m = FindModule(name)) return m->image_base;
+    // Otherwise map it from the catalog into this address space.
+    for (u32 i=0;i<s_catalog_count;++i) {
+        if (!streq(s_catalog[i].name, name)) continue;
+        u64 entry = 0;
+        NTSTATUS st = LoadAndRegister(name, s_catalog[i].data, s_catalog[i].size,
+                                      pml4_phys, s_catalog[i].base, &entry);
+        if (!NT_SUCCESS(st)) return 0;
+        KDBG_INFO("LDR: LoadLibrary('%s') -> 0x%llx", name, s_catalog[i].base);
+        return s_catalog[i].base;
+    }
+    KDBG_ERROR("LDR: LoadLibrary('%s') not in catalog", name);
+    return 0;
+}
+
 } // namespace LDR

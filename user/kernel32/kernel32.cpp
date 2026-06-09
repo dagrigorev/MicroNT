@@ -33,7 +33,7 @@ static inline i64 sc4(i64 n, i64 a1, i64 a2, i64 a3, i64 a4) {
 
 enum { NT_TERMINATE_THREAD = 1, NT_WRITE_FILE = 4,
        NT_CREATE_FILE = 6, NT_READ_FILE = 7, NT_CLOSE_HANDLE = 8,
-       NT_ALLOC_VM = 10, NT_GET_MODULE_BASE = 41 };
+       NT_ALLOC_VM = 10, NT_GET_MODULE_BASE = 41, NT_LOAD_LIBRARY = 42 };
 
 static bool streq(const char* a, const char* b) {
     while (*a && *a == *b) { ++a; ++b; }
@@ -152,6 +152,12 @@ __declspec(dllexport) void* GetModuleHandleA(const char* name) {
     if (!name)
         return reinterpret_cast<void*>(*reinterpret_cast<volatile u64*>(peb() + 0x10));
     i64 b = sc(NT_GET_MODULE_BASE, (i64)(u64)name, (i64)a_strlen(name), 0);
+    return reinterpret_cast<void*>((u64)b);
+}
+
+// LoadLibraryA: map a DLL (from the kernel catalog) into this process.
+__declspec(dllexport) void* LoadLibraryA(const char* name) {
+    i64 b = sc(NT_LOAD_LIBRARY, (i64)(u64)name, (i64)a_strlen(name), 0);
     return reinterpret_cast<void*>((u64)b);
 }
 

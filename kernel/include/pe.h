@@ -151,4 +151,12 @@ NTSTATUS LoadAndRegister(const char* name,
 // Return a registered module's image base by name (for GetModuleHandle), or 0.
 u64 GetModuleBase(const char* name);
 
+// Register a DLL in the on-demand catalog (name -> blob) so LoadLibrary can
+// map it into a process the first time it's requested.
+void AddCatalog(const char* name, const void* pe_data, usize pe_size, u64 base);
+
+// LoadLibrary: return the base of an already-loaded module, or map a catalog
+// DLL into pml4_phys and register it. Returns 0 if unknown.
+u64 LoadLibrary(const char* name, u64 pml4_phys);
+
 } // namespace LDR

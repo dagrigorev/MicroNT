@@ -57,6 +57,7 @@
 #include "../ldr/wintest_pe.h"
 #include "../ldr/kernel32_pe.h"
 #include "../ldr/win32test_pe.h"
+#include "../ldr/extra_pe.h"
 
 
 
@@ -1379,6 +1380,12 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         KASSERT(cr3);
         KProcess* proc = PS::CreateProcess("win32test.exe", cr3);
         KASSERT(proc);
+
+        // Seed the on-demand DLL catalog so LoadLibrary can map these by name.
+        LDR::AddCatalog("kernel32.dll", s_kernel32_pe, s_kernel32_pe_size,
+                        s_kernel32_image_base);
+        LDR::AddCatalog("extra.dll", s_extra_pe, s_extra_pe_size,
+                        s_extra_image_base);
 
         u64 k32_entry = 0;
         NTSTATUS st = LDR::LoadAndRegister("kernel32.dll",

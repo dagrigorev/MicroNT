@@ -16,6 +16,7 @@ __declspec(dllimport) int   ReadFile(void*, void*, uint32_t, uint32_t*, void*);
 __declspec(dllimport) int   CloseHandle(void*);
 __declspec(dllimport) void* GetModuleHandleA(const char*);
 __declspec(dllimport) void* GetProcAddress(void*, const char*);
+__declspec(dllimport) void* LoadLibraryA(const char*);
 }
 
 enum { STD_OUTPUT_HANDLE = (uint32_t)-11 };
@@ -62,6 +63,18 @@ extern "C" void Entry() {
         if (gt) {
             (void)gt();   // call the dynamically-resolved function
             const char* p = "PROCADDR OK: GetModuleHandle+GetProcAddress+call\n";
+            WriteFile(out, p, slen(p), &written, nullptr);
+        }
+    }
+
+    // Runtime DLL loading: load extra.dll (NOT in our import table),
+    // GetProcAddress a function, and call it.
+    void* ex = LoadLibraryA("extra.dll");
+    if (ex) {
+        typedef uint32_t (*addfn)(uint32_t);
+        addfn add = (addfn)GetProcAddress(ex, "ExtraAddOne");
+        if (add && add(41) == 42) {
+            const char* p = "LOADLIB OK: LoadLibrary+GetProcAddress+call (extra.dll)\n";
             WriteFile(out, p, slen(p), &written, nullptr);
         }
     }
