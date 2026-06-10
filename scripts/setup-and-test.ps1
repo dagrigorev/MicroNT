@@ -249,6 +249,9 @@ if ($SkipVmRecreate) {
     VBox modifyvm $UUID --usb off | Out-Null
     VBox modifyvm $UUID --mouse ps2 | Out-Null
     VBox modifyvm $UUID --graphicscontroller vmsvga | Out-Null
+    # Auto-fit: bootloader selects the largest GOP mode; VBox EFI exposes the
+    # resolution named here. Change to fit a different window size.
+    VBox setextradata $UUID "VBoxInternal2/EfiGraphicsResolution" "1920x1080" | Out-Null
     VBox modifyvm $UUID --uart1 0x3F8 4 | Out-Null
     VBox modifyvm $UUID --uartmode1 file $SerialLog | Out-Null
     VBox storagectl $UUID --name SATA --add sata --controller IntelAhci | Out-Null

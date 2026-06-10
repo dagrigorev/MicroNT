@@ -36,6 +36,8 @@
 #include "../include/shelltray.h"
 #include "../include/uxtheme.h"
 #include "../include/userinit.h"
+#include "../include/vmsvga.h"
+#include "../include/shareduserdata.h"
 #include "../include/winlogon.h"
 #include "../include/windowmgr.h"
 #include "../include/winsta.h"
@@ -52,6 +54,10 @@
 #include "../ldr/hello8_pe.h"
 #include "../ldr/hello9_pe.h"
 #include "../ldr/hello10_pe.h"
+#include "../ldr/wintest_pe.h"
+#include "../ldr/kernel32_pe.h"
+#include "../ldr/win32test_pe.h"
+#include "../ldr/extra_pe.h"
 
 
 
@@ -73,6 +79,7 @@ extern volatile u32 g_m20_ok;
 extern volatile u32 g_m21_ok;
 extern volatile u32 g_m22_ok;
 extern "C" volatile u64 g_pending_exception_va;
+extern "C" volatile u32 g_seh_delivered;
 extern u64 s_user_heap_cursor;
 
 extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
@@ -89,6 +96,11 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         VGA::SetFramebuffer(boot_info->fb_base,
                             boot_info->fb_width, boot_info->fb_height,
                             boot_info->fb_stride, boot_info->fb_format);
+    }
+    // If the VMware SVGA II adapter is present, take over the display so the
+    // kernel owns the framebuffer and resolution (falls back to GOP if not).
+    if (VMSVGA::Init() && boot_info && boot_info->fb_width) {
+        VMSVGA::SetMode(boot_info->fb_width, boot_info->fb_height);
     }
     VGA::Init();
     //KB::Init();
@@ -192,6 +204,13 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
+    // Windows compatibility: KUSER_SHARED_DATA at 0x7FFE0000.
+    // Mapped into the shared low page-directory so every user process
+    // sees it, reporting Windows 11.
+    // ----------------------------------------------------------
+    KUSER::Init();
+
+    // ----------------------------------------------------------
     // 7. Object manager (M4: types, handles, namespace)
     // ----------------------------------------------------------
     OB::Init();
@@ -270,6 +289,31 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     // ----------------------------------------------------------
     LDR::Init();
     Debug::Print("[MicroNT] PE loader initialized\r\n");
+
+    // Windows compat: verify file-backed section objects (memory-mapped
+    // files / DLL image mapping).
+    SYSCALL::SelfTestFileSection();
+
+    // Windows compat: verify NtProtectVirtualMemory / NtQueryVirtualMemory
+    // primitives (change a page's protection, read it back, detect free VAs).
+    {
+        u64 cr3 = VMM::CreateUserPml4();
+        u64 va  = 0x650000000ULL;
+        u64 ph  = PMM::AllocPage();
+        if (cr3 && ph) {
+            VMM::MapPageInto(cr3, va, ph,
+                             VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+            bool rw_before = (VMM::GetPteInto(cr3, va) & VMM::PTE_WRITABLE) != 0;
+            VMM::ProtectPageInto(cr3, va, VMM::PTE_USER);   // -> read-only
+            u64 after = VMM::GetPteInto(cr3, va);
+            bool ro_after = (after & VMM::PTE_PRESENT) && !(after & VMM::PTE_WRITABLE);
+            bool free_ok  = VMM::GetPteInto(cr3, 0x999000000ULL) == 0;
+            Debug::Printf("[VMTEST] protect rw->ro=%s query_free=%s -> %s\r\n",
+                          (rw_before && ro_after) ? "ok" : "BAD",
+                          free_ok ? "ok" : "BAD",
+                          (rw_before && ro_after && free_ok) ? "PASS" : "FAIL");
+        }
+    }
 
     REGISTRY::Init();
     KASSERT(REGISTRY::LoadSystemHive());
@@ -700,8 +744,10 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         KASSERT(uthread);
         Sched::AddThread(uthread);
 
-        while (!g_m8_write_ok) { Sched::Schedule(); }
-        KASSERT(g_m11_heap_ok);
+        // Wait on M11's own completion signal, not the shared write flag --
+        // a late write from the previous milestone's process could otherwise
+        // satisfy g_m8_write_ok before hello4 runs its heap test.
+        while (!g_m11_heap_ok) { Sched::Schedule(); }
         Debug::Print("[MicroNT] M11 ready\r\n");
     }
 
@@ -1241,6 +1287,178 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
     }
 
     // ----------------------------------------------------------
+    // SEH: hardware-exception delivery to a user handler.
+    //  A user thread registers an exception handler, executes UD2 (illegal
+    //  instruction). The kernel delivers the #UD to the handler (in ring-3),
+    //  which terminates the thread. g_seh_delivered confirms the dispatch.
+    // ----------------------------------------------------------
+    {
+        g_seh_delivered = 0;
+
+        u8 prog[32]; u32 o = 0;
+        auto emit = [&](u8 b) { prog[o++] = b; };
+        emit(0xB8); emit(23); emit(0); emit(0); emit(0);   // mov eax, 23 (NtSetExceptionHandler)
+        emit(0x48); emit(0xBF); u32 imm_off = o;
+        for (int i = 0; i < 8; ++i) emit(0);               // mov rdi, <handler va> (patched)
+        emit(0x0F); emit(0x05);                            // syscall
+        emit(0x0F); emit(0x0B);                            // ud2  -> #UD
+        emit(0xEB); emit(0xFE);                            // jmp $ (safety)
+        u32 handler_off = o;
+        emit(0xB8); emit(1); emit(0); emit(0); emit(0);    // mov eax, 1 (NtTerminateThread)
+        emit(0x31); emit(0xFF);                            // xor edi, edi
+        emit(0x0F); emit(0x05);                            // syscall
+        emit(0xEB); emit(0xFE);                            // jmp $
+
+        constexpr u64 CODE_VA = 0x300001000ULL;
+        constexpr u64 STK_VA  = 0x300002000ULL;
+        u64 handler_va = CODE_VA + handler_off;
+        for (int i = 0; i < 8; ++i) prog[imm_off + i] = (u8)(handler_va >> (i * 8));
+
+        u64 code_phys = PMM::AllocPage();
+        u64 stk_phys  = PMM::AllocPage();
+        KASSERT(code_phys && stk_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) { reinterpret_cast<u8*>(code_phys)[i] = 0;
+                                              reinterpret_cast<u8*>(stk_phys)[i] = 0; }
+        for (u32 i = 0; i < o; ++i) reinterpret_cast<u8*>(code_phys)[i] = prog[i];
+
+        u64 cr3 = VMM::CreateUserPml4(); KASSERT(cr3);
+        KProcess* proc = PS::CreateProcess("sehtest.exe", cr3); KASSERT(proc);
+        KASSERT(VMM::MapPageInto(cr3, CODE_VA, code_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_USER));
+        KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+        KThread* th = PS::CreateUserThread(proc, "sehtest", CODE_VA, STK_VA + PAGE_SIZE);
+        KASSERT(th);
+        Sched::AddThread(th);
+
+        while (!g_seh_delivered) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] SEH ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // WINPE: load and run a PE32+ compiled from C++ source by the user-mode
+    // build pipeline (scripts/build-user.ps1 -> kernel/ldr/wintest_pe.h).
+    // Proves the toolchain path to running real Windows-style binaries.
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        u64 cr3 = VMM::CreateUserPml4();
+        KASSERT(cr3);
+        KProcess* proc = PS::CreateProcess("wintest.exe", cr3);
+        KASSERT(proc);
+
+        u64 entry_va = 0;
+        NTSTATUS st = LDR::LoadPe(s_wintest_pe, s_wintest_pe_size,
+                                  cr3, s_wintest_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        constexpr u64 STK_VA = 0x141000000ULL;   // above the 0x140000000 image
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) reinterpret_cast<u8*>(stk_phys)[i] = 0;
+        KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+
+        KThread* th = PS::CreateUserThread(proc, "wintest.exe!Entry",
+                                           entry_va, STK_VA + PAGE_SIZE);
+        KASSERT(th);
+        Sched::AddThread(th);
+
+        while (!g_m8_write_ok) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] WINPE ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // WIN32: load a compiled kernel32.dll and an EXE that imports it. The
+    // loader resolves the EXE's imports against kernel32's export table;
+    // kernel32's WriteFile/ExitProcess wrap NT syscalls. This is a real
+    // Win32 import chain (EXE -> kernel32 -> NT).
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        u64 cr3 = VMM::CreateUserPml4();
+        KASSERT(cr3);
+        KProcess* proc = PS::CreateProcess("win32test.exe", cr3);
+        KASSERT(proc);
+
+        // Seed the on-demand DLL catalog so LoadLibrary can map these by name.
+        LDR::AddCatalog("kernel32.dll", s_kernel32_pe, s_kernel32_pe_size,
+                        s_kernel32_image_base);
+        LDR::AddCatalog("extra.dll", s_extra_pe, s_extra_pe_size,
+                        s_extra_image_base);
+
+        u64 k32_entry = 0;
+        NTSTATUS st = LDR::LoadAndRegister("kernel32.dll",
+            s_kernel32_pe, s_kernel32_pe_size, cr3, s_kernel32_image_base, &k32_entry);
+        KASSERT(NT_SUCCESS(st));
+
+        u64 entry_va = 0;
+        st = LDR::LoadPe(s_win32test_pe, s_win32test_pe_size,
+                         cr3, s_win32test_image_base, &entry_va);
+        KASSERT(NT_SUCCESS(st));
+
+        constexpr u64 STK_VA = 0x142000000ULL;
+        u64 stk_phys = PMM::AllocPage();
+        KASSERT(stk_phys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) reinterpret_cast<u8*>(stk_phys)[i] = 0;
+        KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                 VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+
+        KThread* th = PS::CreateUserThread(proc, "win32test.exe!Entry",
+                                           entry_va, STK_VA + PAGE_SIZE);
+        KASSERT(th);
+        Sched::AddThread(th);
+
+        while (!g_m8_write_ok) { Sched::Schedule(); }
+        Debug::Print("[MicroNT] WIN32 ready\r\n");
+    }
+
+    // ----------------------------------------------------------
+    // DISKEXE: load a stock console EXE from the VHD (not an embedded blob),
+    // linking kernel32 -- the real "run an on-disk Windows binary" path.
+    // ----------------------------------------------------------
+    {
+        g_m8_write_ok = 0;
+        usize wsz = 0;
+        const u8* wbin = VFS::FindFile("winapp.exe", &wsz);
+        if (wbin && wsz > 64) {
+            // ImageBase from the PE optional header (e_lfanew -> opt+24).
+            u32 e_lf = *reinterpret_cast<const u32*>(wbin + 0x3C);
+            u64 base = *reinterpret_cast<const u64*>(wbin + e_lf + 4 + 20 + 24);
+
+            u64 cr3 = VMM::CreateUserPml4();
+            KASSERT(cr3);
+            KProcess* proc = PS::CreateProcess("winapp.exe", cr3);
+            KASSERT(proc);
+
+            u64 k32_entry = 0;
+            NTSTATUS st = LDR::LoadAndRegister("kernel32.dll", s_kernel32_pe,
+                s_kernel32_pe_size, cr3, s_kernel32_image_base, &k32_entry);
+            KASSERT(NT_SUCCESS(st));
+
+            u64 entry_va = 0;
+            st = LDR::LoadPe(wbin, wsz, cr3, base, &entry_va);
+            KASSERT(NT_SUCCESS(st));
+
+            constexpr u64 STK_VA = 0x141000000ULL;
+            u64 stk_phys = PMM::AllocPage();
+            KASSERT(stk_phys);
+            for (u32 i = 0; i < PAGE_SIZE; ++i) reinterpret_cast<u8*>(stk_phys)[i] = 0;
+            KASSERT(VMM::MapPageInto(cr3, STK_VA, stk_phys,
+                                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER));
+
+            KThread* th = PS::CreateUserThread(proc, "winapp.exe!Entry",
+                                               entry_va, STK_VA + PAGE_SIZE);
+            KASSERT(th);
+            Sched::AddThread(th);
+            while (!g_m8_write_ok) { Sched::Schedule(); }
+        } else {
+            Debug::Print("[WARN ] winapp.exe not on VHD - skipping DISKEXE\r\n");
+        }
+        Debug::Print("[MicroNT] DISKEXE ready\r\n");
+    }
+
+    // ----------------------------------------------------------
     // Ready
     // ----------------------------------------------------------
     Debug::Print("[MicroNT] Ready\r\n");
@@ -1265,9 +1483,24 @@ extern "C" void kernel_main(MicroNTBootInfo* boot_info) {
         };
         SM::StartInteractiveSession(shell_cfg);
 
+        VMSVGA::Present();                // flush the freshly composed desktop
+        u64 last_present = 0;
         while (true) {
-            SM::PumpInteractiveInput();   // drain PS/2 mouse -> shell hit-testing
-            Sched::Schedule();
+            bool changed = SM::PumpInteractiveInput();  // PS/2 mouse -> hit-test
+            // Flush the framebuffer to the host only when it changed (mouse
+            // moved / desktop repainted), plus a low-rate keepalive (~6 fps)
+            // for the blinking cursor and clock. Presenting every tick was a
+            // VM-exit storm that kept the host CPU busy while idle.
+            u64 now = HAL::PitTicks();
+            if (changed || now - last_present >= 15) {
+                VMSVGA::Present();
+                last_present = now;
+            }
+            Sched::Schedule();            // yield to any ready thread
+            // Idle: sleep the CPU until the next interrupt instead of
+            // busy-spinning. The PIT (100 Hz) plus keyboard/mouse IRQs wake us
+            // promptly, so input stays responsive while idle CPU drops to ~0.
+            HAL::HaltUntilInterrupt();
         }
     }
 }

@@ -3,6 +3,7 @@
 #include "../include/hal.h"
 #include "../include/pe.h"
 #include "../ldr/ntdll_pe.h"
+#include "../ldr/kernel32_pe.h"
 #include "../include/debug.h"
 #include "../include/process.h"
 #include "../include/ntstatus.h"
@@ -77,6 +78,17 @@ static KPipe g_pipes[4];
 static constexpr u64 PIPE_HANDLE_BASE = 0x80;
 constexpr u64 NT_CREATE_NAMED_PIPE = 33;
 
+// Windows NT information queries (leverage the TEB/PEB/KUSER environment).
+constexpr u64 NT_QUERY_PROCESS_INFO = 34;  // NtQueryInformationProcess
+constexpr u64 NT_QUERY_THREAD_INFO  = 35;  // NtQueryInformationThread
+constexpr u64 NT_QUERY_SYSTEM_TIME  = 36;  // NtQuerySystemTime
+constexpr u64 NT_QUERY_PERF_COUNTER = 37;  // NtQueryPerformanceCounter
+constexpr u64 NT_CREATE_FILE_SECTION = 38; // NtCreateSection over a VFS file
+constexpr u64 NT_PROTECT_VM          = 39; // NtProtectVirtualMemory
+constexpr u64 NT_QUERY_VM            = 40; // NtQueryVirtualMemory
+constexpr u64 NT_GET_MODULE_BASE     = 41; // module base by name (GetModuleHandle)
+constexpr u64 NT_LOAD_LIBRARY        = 42; // map a catalog DLL (LoadLibrary)
+
 // M30: writable files delegated to VFS::WNode table.
 // Handle range 0x40-0x4F maps to VFS WNode indices 0-15.
 static constexpr u64 WFILE_HANDLE_BASE = 0x40;
@@ -116,6 +128,9 @@ volatile u32 g_m22_ok        = 0;
 
 // M15: exception delivery VA -- set by NT_RAISE_EXCEPTION, cleared by syscall_entry.asm
 extern "C" volatile u64 g_pending_exception_va = 0;
+
+// Set by the IDT when a hardware fault is delivered to a user SEH handler.
+extern "C" volatile u32 g_seh_delivered = 0;
 
 // M15: shared memory section table
 struct KSection {
@@ -167,6 +182,15 @@ static bool WriteUserByte(u64 pml4, u64 user_va, u8 val) {
     return true;
 }
 
+// Write a little-endian u64 to user memory via explicit PML4 walk.
+static void WriteUserU64(u64 pml4, u64 user_va, u64 v) {
+    for (int i = 0; i < 8; ++i) WriteUserByte(pml4, user_va + i, (u8)(v >> (i * 8)));
+}
+
+static void WriteUserU32(u64 pml4, u64 user_va, u32 v) {
+    for (int i = 0; i < 4; ++i) WriteUserByte(pml4, user_va + i, (u8)(v >> (i * 8)));
+}
+
 // Read up to 'len' bytes from user virtual address into kernel buffer.
 // Uses the current thread's process Cr3 to walk the user PML4.
 static usize ReadUserBytes(u64 user_va, u8* kbuf, usize len) {
@@ -185,6 +209,29 @@ static usize ReadUserBytes(u64 user_va, u8* kbuf, usize len) {
         copied += n;
     }
     return copied;
+}
+
+// Create a section object backed by a copy of `data` (file-backed mapping).
+// Returns a 1-based section handle, or 0 on failure.
+static u64 CreateSectionFromData(const u8* data, usize size) {
+    usize pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (!size || pages > 32) return 0;
+    for (usize i = 0; i < 8; ++i) {
+        if (s_sections[i].in_use) continue;
+        s_sections[i].page_count = pages;
+        s_sections[i].in_use     = true;
+        for (usize j = 0; j < pages; ++j) {
+            u64 phys = PMM::AllocPage();
+            if (!phys) { s_sections[i].in_use = false; return 0; }
+            u8* p = reinterpret_cast<u8*>(phys);
+            usize off = j * PAGE_SIZE;
+            for (usize k = 0; k < PAGE_SIZE; ++k)
+                p[k] = (off + k < size) ? data[off + k] : 0;
+            s_sections[i].phys[j] = phys;
+        }
+        return (u64)(i + 1);
+    }
+    return 0;
 }
 
 // Assembly entry point (syscall_entry.asm)
@@ -454,6 +501,45 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             }
             WriteUserByte(pml4, a1, 0); return 0;
         }
+        // winexec <file> -- load an on-disk PE at its preferred base, link
+        // kernel32, and run it (a real Win32 binary launcher).
+        if (n > 8 && kstrcmp(linebuf, "winexec ", 8)) {
+            char wname[64] = {};
+            usize wl = n - 8 < 63 ? n - 8 : 63;
+            for (usize i = 0; i < wl; ++i) wname[i] = linebuf[8 + i];
+            usize fsz = 0;
+            const u8* fd = VFS::FindFile(wname, &fsz);
+            if (!fd || fsz < 64) {
+                kprint("File not found.", 0x0C);
+            } else {
+                u32 e_lf = *reinterpret_cast<const u32*>(fd + 0x3C);
+                u64 base = *reinterpret_cast<const u64*>(fd + e_lf + 4 + 20 + 24);
+                u64 ccr3 = VMM::CreateUserPml4();
+                KProcess* cp = ccr3 ? PS::CreateProcess(wname, ccr3) : nullptr;
+                if (cp) {
+                    u64 k = 0;
+                    LDR::LoadAndRegister("kernel32.dll", s_kernel32_pe,
+                        s_kernel32_pe_size, ccr3, s_kernel32_image_base, &k);
+                    u64 entry = 0;
+                    NTSTATUS st = LDR::LoadPe(fd, fsz, ccr3, base, &entry);
+                    if (NT_SUCCESS(st) && entry) {
+                        u64 stk = base + 0x1000000ULL;
+                        u64 fl = VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER;
+                        for (usize i = 0; i < 4; ++i) {
+                            u64 pp = PMM::AllocPage(); if (!pp) break;
+                            u8* pb = reinterpret_cast<u8*>(pp);
+                            for (usize j = 0; j < PAGE_SIZE; ++j) pb[j] = 0;
+                            VMM::MapPageInto(ccr3, stk + i * PAGE_SIZE, pp, fl);
+                        }
+                        KThread* ct = PS::CreateUserThread(cp, wname, entry,
+                                                           stk + 4 * PAGE_SIZE);
+                        if (ct) { Sched::AddThread(ct); kprint("Launched.", 0x0A); }
+                        else kprint("Thread creation failed.", 0x0C);
+                    } else kprint("PE load failed.", 0x0C);
+                } else kprint("Process creation failed.", 0x0C);
+            }
+            WriteUserByte(pml4, a1, 0); return 0;
+        }
         // mkdir <name>
         if (n > 6 && kstrcmp(linebuf, "mkdir ", 6)) {
             const char* dirname = linebuf + 6;
@@ -703,7 +789,85 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         char membuf[128] = {};
 
         if (a1 == 0) {
-            str = "MicroNT Version M31\r\n";
+            // Read the OS version from KUSER_SHARED_DATA (0x7FFE0000) in THIS
+            // process's address space -- proving the Windows-compatible shared
+            // page is mapped per-process. Offsets are the documented x64 ones.
+            volatile u32* sud = reinterpret_cast<volatile u32*>(0x7FFE0000ULL);
+            u32 maj = sud[0x26C / 4];
+            u32 min = sud[0x270 / 4];
+            u32 bld = sud[0x274 / 4];
+            char* p = membuf;
+            auto app = [&](const char* s) { while (*s) *p++ = *s++; };
+            auto num = [&](u32 v) {
+                char t[12]; int n = 0;
+                if (!v) t[n++] = '0'; else { while (v) { t[n++] = '0' + v % 10; v /= 10; } }
+                while (n) *p++ = t[--n];
+            };
+            app("MicroNT [Windows ");
+            app((maj == 10 && min == 0) ? "11" : "NT");
+            app("] "); num(maj); *p++ = '.'; num(min); *p++ = '.'; num(bld);
+            app("\r\n"); *p = 0;
+            str = membuf;
+
+            // End-to-end check: this syscall runs with the calling user
+            // thread's GS base (no SWAPGS), so GS:[0x30]=TEB.Self and
+            // GS:[0x60]=PEB. Read the PEB's OSBuildNumber back through GS to
+            // prove the TEB/PEB/GS chain is live for a real user thread.
+            u64 gsbase = HAL::ReadMsr(0xC0000101);
+            if (gsbase) {
+                u64 teb_self = 0, peb_ptr = 0;
+                __asm__ volatile("movq %%gs:0x30, %0" : "=r"(teb_self));
+                __asm__ volatile("movq %%gs:0x60, %0" : "=r"(peb_ptr));
+                u32 peb_build = peb_ptr
+                    ? *reinterpret_cast<volatile u16*>(peb_ptr + 0x120) : 0;
+                Debug::Printf("[TEB/PEB] gs=0x%llx TEB.Self=0x%llx PEB=0x%llx "
+                              "OSBuild=%u\r\n",
+                              gsbase, teb_self, peb_ptr, peb_build);
+
+                // Thread runtime: TLS pointer (TEB+0x58) + ProcessHeap (PEB+0x30).
+                u64 tls = 0;
+                __asm__ volatile("movq %%gs:0x58, %0" : "=r"(tls));
+                u64 heap = peb_ptr
+                    ? *reinterpret_cast<volatile u64*>(peb_ptr + 0x30) : 0;
+                Debug::Printf("[RUNTIME] TLS=0x%llx ProcessHeap=0x%llx\r\n", tls, heap);
+            }
+
+            // Verify the NtQueryInformation* data for this live user thread.
+            Debug::Printf("[NTINFO] ProcessBasicInfo PEB=0x%llx PID=%u | "
+                          "ThreadBasicInfo TEB=0x%llx CID=%u.%u\r\n",
+                          t->Process->PebVa, t->Process->Pid,
+                          t->TebVa, t->Process->Pid, t->Tid);
+
+            // Walk PEB->Ldr->InLoadOrderModuleList in the process's own address
+            // space to prove the loaded-module list is well-formed and named.
+            u64 peb_va = t->Process->PebVa;
+            if (peb_va) {
+                u64 ldr = *reinterpret_cast<volatile u64*>(peb_va + 0x18);
+                u64 head = ldr + 0x10;
+                u64 first = ldr ? *reinterpret_cast<volatile u64*>(head) : 0;
+                if (first && first != head) {
+                    u64 dllbase = *reinterpret_cast<volatile u64*>(first + 0x30);
+                    u16 wlen = *reinterpret_cast<volatile u16*>(first + 0x58);
+                    u64 nbuf = *reinterpret_cast<volatile u64*>(first + 0x60);
+                    char nm[24]; u32 c = 0;
+                    for (; nbuf && c < (u32)(wlen / 2) && c < 23; ++c)
+                        nm[c] = (char)*reinterpret_cast<volatile u16*>(nbuf + c * 2);
+                    nm[c] = 0;
+                    Debug::Printf("[PEB.Ldr] InLoadOrder module='%s' DllBase=0x%llx\r\n",
+                                  nm, dllbase);
+                }
+                // PEB->ProcessParameters->CommandLine (GetCommandLineW source).
+                u64 params = *reinterpret_cast<volatile u64*>(peb_va + 0x20);
+                if (params) {
+                    u16 cl = *reinterpret_cast<volatile u16*>(params + 0x70);
+                    u64 cb = *reinterpret_cast<volatile u64*>(params + 0x78);
+                    char cmd[40]; u32 c = 0;
+                    for (; cb && c < (u32)(cl / 2) && c < 39; ++c)
+                        cmd[c] = (char)*reinterpret_cast<volatile u16*>(cb + c * 2);
+                    cmd[c] = 0;
+                    Debug::Printf("[PEB.Params] CommandLine='%s'\r\n", cmd);
+                }
+            }
         } else if (a1 == 1) {
             // Memory stats: provide enough data for visual bar rendering
             u64 free_pages  = (u64)PMM::FreePages();
@@ -760,6 +924,110 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
         for (usize i=0; i<len; ++i) WriteUserByte(pml4, a2+i, (u8)str[i]);
         WriteUserByte(pml4, a2+len, 0);
         return (u64)len;
+    }
+
+    case NT_QUERY_PROCESS_INFO: {
+        // NtQueryInformationProcess. a1=class, a2=buf, a3=len.
+        // Class 0 = ProcessBasicInformation (PROCESS_BASIC_INFORMATION, x64).
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return STATUS_UNSUCCESSFUL;
+        u64 pml4 = t->Process->Cr3;
+        if (a1 == 0 && a3 >= 48) {
+            for (u32 i = 0; i < 48; ++i) WriteUserByte(pml4, a2 + i, 0);
+            WriteUserU64(pml4, a2 + 0x08, t->Process->PebVa);  // PebBaseAddress
+            WriteUserU64(pml4, a2 + 0x20, t->Process->Pid);    // UniqueProcessId
+            return STATUS_SUCCESS;
+        }
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    case NT_QUERY_THREAD_INFO: {
+        // NtQueryInformationThread. a1=class, a2=buf, a3=len.
+        // Class 0 = ThreadBasicInformation (THREAD_BASIC_INFORMATION, x64).
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return STATUS_UNSUCCESSFUL;
+        u64 pml4 = t->Process->Cr3;
+        if (a1 == 0 && a3 >= 48) {
+            for (u32 i = 0; i < 48; ++i) WriteUserByte(pml4, a2 + i, 0);
+            WriteUserU64(pml4, a2 + 0x08, t->TebVa);           // TebBaseAddress
+            WriteUserU64(pml4, a2 + 0x10, t->Process->Pid);    // ClientId.UniqueProcess
+            WriteUserU64(pml4, a2 + 0x18, t->Tid);             // ClientId.UniqueThread
+            return STATUS_SUCCESS;
+        }
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    case NT_QUERY_SYSTEM_TIME: {
+        // NtQuerySystemTime. a1 = user LARGE_INTEGER*. 100 ns units since boot.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process || !a1) return STATUS_UNSUCCESSFUL;
+        WriteUserU64(t->Process->Cr3, a1, (u64)HAL::PitTicks() * 100000ULL);
+        return STATUS_SUCCESS;
+    }
+
+    case NT_QUERY_PERF_COUNTER: {
+        // NtQueryPerformanceCounter. a1 = counter*, a2 = optional frequency*.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process || !a1) return STATUS_UNSUCCESSFUL;
+        WriteUserU64(t->Process->Cr3, a1, (u64)HAL::PitTicks());
+        if (a2) WriteUserU64(t->Process->Cr3, a2, 100ULL);   // PIT = 100 Hz
+        return STATUS_SUCCESS;
+    }
+
+    case NT_PROTECT_VM: {
+        // NtProtectVirtualMemory. a1=base, a2=size, a3=Win32 PAGE_* protection.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return STATUS_UNSUCCESSFUL;
+        u64 base = a1 & ~0xFFFULL;
+        usize span = (usize)((a2 + (a1 & 0xFFF) + PAGE_SIZE - 1) / PAGE_SIZE);
+        if (!span) span = 1;
+        u64 flags = VMM::PTE_PRESENT | VMM::PTE_USER;
+        if (a3 & 0xCC) flags |= VMM::PTE_WRITABLE;   // RW/WRITECOPY/EXEC_RW/EXEC_WRITECOPY
+        for (usize i = 0; i < span; ++i)
+            VMM::ProtectPageInto(t->Process->Cr3, base + i * PAGE_SIZE, flags);
+        return STATUS_SUCCESS;
+    }
+
+    case NT_QUERY_VM: {
+        // NtQueryVirtualMemory -> MEMORY_BASIC_INFORMATION (x64). a1=addr, a2=buf.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process || !a2) return STATUS_UNSUCCESSFUL;
+        u64 pml4 = t->Process->Cr3;
+        u64 va  = a1 & ~0xFFFULL;
+        u64 pte = VMM::GetPteInto(pml4, va);
+        for (u32 i = 0; i < 48; ++i) WriteUserByte(pml4, a2 + i, 0);
+        WriteUserU64(pml4, a2 + 0x00, va);             // BaseAddress
+        WriteUserU64(pml4, a2 + 0x18, PAGE_SIZE);      // RegionSize
+        if (pte & VMM::PTE_PRESENT) {
+            WriteUserU64(pml4, a2 + 0x08, va);         // AllocationBase
+            WriteUserU32(pml4, a2 + 0x20, 0x1000);     // State = MEM_COMMIT
+            WriteUserU32(pml4, a2 + 0x24, (pte & VMM::PTE_WRITABLE) ? 0x04u : 0x02u); // PAGE_READWRITE/READONLY
+            WriteUserU32(pml4, a2 + 0x28, 0x20000);    // Type = MEM_PRIVATE
+        } else {
+            WriteUserU32(pml4, a2 + 0x20, 0x10000);    // State = MEM_FREE
+        }
+        return STATUS_SUCCESS;
+    }
+
+    case NT_GET_MODULE_BASE: {
+        // Resolve a loaded module's image base by name (GetModuleHandle).
+        // a1=name ptr, a2=len.
+        char name[40] = {};
+        usize n = a2 < 39 ? (usize)a2 : 39;
+        usize got = ReadUserBytes(a1, reinterpret_cast<u8*>(name), n);
+        name[got] = 0;
+        return LDR::GetModuleBase(name);
+    }
+
+    case NT_LOAD_LIBRARY: {
+        // LoadLibrary: map a catalog DLL into this process. a1=name, a2=len.
+        KThread* t = Sched::CurrentThread();
+        if (!t || !t->Process) return 0;
+        char name[40] = {};
+        usize n = a2 < 39 ? (usize)a2 : 39;
+        usize got = ReadUserBytes(a1, reinterpret_cast<u8*>(name), n);
+        name[got] = 0;
+        return LDR::LoadLibrary(name, t->Process->Cr3);
     }
 
     case NT_DELAY_EXECUTION:
@@ -959,6 +1227,22 @@ extern "C" u64 KiSystemCall(u64 number, u64 a1, u64 a2,
             }
         }
         return 0;
+    }
+
+    case NT_CREATE_FILE_SECTION: {
+        // NtCreateSection over a VFS file. a1=name ptr, a2=name len.
+        // Returns a section handle to map with NtMapViewOfSection.
+        char name[64] = {};
+        usize nlen = a2 < 63 ? (usize)a2 : 63;
+        usize got = ReadUserBytes(a1, reinterpret_cast<u8*>(name), nlen);
+        name[got] = 0;
+        usize fsz = 0;
+        const u8* fdata = VFS::FindFile(name, &fsz);
+        if (!fdata || !fsz) return 0;
+        u64 h = CreateSectionFromData(fdata, fsz);
+        KDBG_TRACE("SYSCALL: NtCreateFileSection('%s', %llu bytes) -> handle %llu",
+                   name, (u64)fsz, h);
+        return h;
     }
 
     case NT_MAP_VIEW: {
@@ -1268,6 +1552,49 @@ void SetCommands(const char** cmds, u32 count) {
     for (u32 i = 0; i < count && i < 8; ++i)
         s_cmds[s_cmd_count++] = cmds[i];
     KDBG_INFO("SYSCALL: command queue loaded (%u commands)", s_cmd_count);
+}
+
+// Verify file-backed section objects: create a section from a VFS file, then
+// map it into a fresh user address space and read the bytes back -- the core
+// of memory-mapped files / DLL image mapping.
+bool SelfTestFileSection() {
+    usize sz = 0;
+    const u8* data = VFS::FindFile("hello3.exe", &sz);
+    if (!data || sz < 2) {
+        KDBG_INFO("SECTEST: hello3.exe not in VFS - skipping");
+        return true;
+    }
+    u64 h = CreateSectionFromData(data, sz);
+    if (!h) { KDBG_ERROR("SECTEST: section create failed"); return false; }
+    KSection& sec = s_sections[h - 1];
+
+    bool copy_ok = (reinterpret_cast<u8*>(sec.phys[0])[0] == 'M' &&
+                    reinterpret_cast<u8*>(sec.phys[0])[1] == 'Z');
+
+    bool map_ok = false;
+    u64 cr3 = VMM::CreateUserPml4();
+    if (cr3) {
+        u64 va = 0x600000000ULL;
+        bool mapped = true;
+        for (usize j = 0; j < sec.page_count; ++j)
+            if (!VMM::MapPageInto(cr3, va + j * PAGE_SIZE, sec.phys[j],
+                                  VMM::PTE_PRESENT | VMM::PTE_USER)) { mapped = false; break; }
+        if (mapped) {
+            u64 phys = VMM::TranslateInPml4(cr3, va);
+            if (phys) {
+                u8* mp = reinterpret_cast<u8*>(phys);
+                map_ok = (mp[0] == 'M' && mp[1] == 'Z');
+            }
+        }
+    }
+
+    KDBG_INFO("SECTEST: file section h=%llu pages=%llu copy=%s map=%s (MZ readback)",
+              h, (u64)sec.page_count, copy_ok ? "ok" : "BAD", map_ok ? "ok" : "BAD");
+
+    // Release the test section's pages.
+    for (usize j = 0; j < sec.page_count; ++j) PMM::FreePage(sec.phys[j]);
+    sec.in_use = false;
+    return copy_ok && map_ok;
 }
 
 } // namespace SYSCALL

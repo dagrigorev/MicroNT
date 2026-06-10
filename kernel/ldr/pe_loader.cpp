@@ -4,6 +4,7 @@
 #include "../include/memory.h"
 #include "../include/debug.h"
 #include "../include/ntstatus.h"
+#include "../include/process.h"
 
 // ============================================================
 // Internal PE constants
@@ -42,13 +43,19 @@ struct Module {
     const u8* pe_data;
     usize    pe_size;
 };
-constexpr usize MAX_MODULES = 16;
+constexpr usize MAX_MODULES = 64;   // headroom: ntdll is re-registered per process
 static Module   s_mods[MAX_MODULES];
 static u32      s_mod_count = 0;
 
 static void RegisterModule(const char* name, u64 base,
                             const u8* data, usize size) {
-    if (s_mod_count >= MAX_MODULES) return;
+    // Append-only (matches the original loader). The same DLL is re-registered
+    // once per process; FindModule returns the first match. MAX_MODULES has
+    // enough headroom for every ntdll load plus kernel32.
+    if (s_mod_count >= MAX_MODULES) {
+        KDBG_ERROR("LDR: module registry full, dropping '%s'", name);
+        return;
+    }
     auto& m = s_mods[s_mod_count++];
     usize n = strlen_s(name);
     if (n >= 32) n = 31;
@@ -157,6 +164,22 @@ static NTSTATUS MapSections(const u8* base, usize pe_size,
     u16 opt_sz    = *reinterpret_cast<const u16*>(pe+16);
     const u8* opt  = pe + 20;
     const u8* shdrs = opt + opt_sz;
+
+    // Map the PE headers at the image base (read-only, user). Windows maps the
+    // headers here; GetProcAddress / RtlImageNtHeader read e_lfanew and the data
+    // directories from base+0. Sections begin at RVA >= 0x1000 so no overlap.
+    {
+        u64 hphys = PMM::AllocPage();
+        if (!hphys) return STATUS_INSUFFICIENT_RESOURCES;
+        u8* hp = reinterpret_cast<u8*>(hphys);
+        usize hcopy = pe_size < PAGE_SIZE ? pe_size : PAGE_SIZE;
+        for (usize i=0;i<PAGE_SIZE;++i) hp[i] = (i < hcopy) ? base[i] : 0;
+        if (!VMM::MapPageInto(pml4_phys, load_base, hphys,
+                              VMM::PTE_PRESENT | VMM::PTE_USER)) {
+            PMM::FreePage(hphys);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+    }
 
     for (u16 s=0; s<num_sects; ++s) {
         const u8* sh = shdrs + s*40;
@@ -320,6 +343,9 @@ NTSTATUS LoadPe(const void* pe_data, usize pe_size,
     st = ResolveImports(base, pe_size, pml4_phys, load_base);
     if (!NT_SUCCESS(st)) return st;
 
+    // 3. Record the image base in the process PEB / PEB->Ldr (Windows compat).
+    PS::NotifyImageLoaded(pml4_phys, load_base);
+
     *entry_out = load_base + entry_rva;
     KDBG_INFO("LDR: entry -> 0x%llx", *entry_out);
     return STATUS_SUCCESS;
@@ -332,6 +358,45 @@ NTSTATUS LoadAndRegister(const char* name,
     if (NT_SUCCESS(st))
         RegisterModule(name, load_base, static_cast<const u8*>(pe_data), pe_size);
     return st;
+}
+
+u64 GetModuleBase(const char* name) {
+    Module* m = FindModule(name);
+    return m ? m->image_base : 0;
+}
+
+// On-demand DLL catalog (name -> blob + preferred base).
+struct CatalogEntry { char name[32]; const u8* data; usize size; u64 base; };
+static CatalogEntry s_catalog[16];
+static u32          s_catalog_count = 0;
+
+void AddCatalog(const char* name, const void* pe_data, usize pe_size, u64 base) {
+    if (s_catalog_count >= 16) return;
+    auto& c = s_catalog[s_catalog_count++];
+    usize n = strlen_s(name); if (n >= 32) n = 31;
+    for (usize i=0;i<n;++i) c.name[i]=name[i];
+    c.name[n]='\0';
+    c.data = static_cast<const u8*>(pe_data);
+    c.size = pe_size;
+    c.base = base;
+    KDBG_TRACE("LDR: catalog '%s' base=0x%llx", name, base);
+}
+
+u64 LoadLibrary(const char* name, u64 pml4_phys) {
+    // Already registered (e.g. mapped at process creation)? Return its base.
+    if (Module* m = FindModule(name)) return m->image_base;
+    // Otherwise map it from the catalog into this address space.
+    for (u32 i=0;i<s_catalog_count;++i) {
+        if (!streq(s_catalog[i].name, name)) continue;
+        u64 entry = 0;
+        NTSTATUS st = LoadAndRegister(name, s_catalog[i].data, s_catalog[i].size,
+                                      pml4_phys, s_catalog[i].base, &entry);
+        if (!NT_SUCCESS(st)) return 0;
+        KDBG_INFO("LDR: LoadLibrary('%s') -> 0x%llx", name, s_catalog[i].base);
+        return s_catalog[i].base;
+    }
+    KDBG_ERROR("LDR: LoadLibrary('%s') not in catalog", name);
+    return 0;
 }
 
 } // namespace LDR

@@ -297,60 +297,170 @@ InteractiveSession* StartInteractiveSession(const ShellImageConfig& cfg) {
     return &session;
 }
 
-// Re-publish shell models and repaint after the Start menu open state changes.
-static void ToggleStartMenu() {
-    bool open = !s_desktop_layout.StartMenuOpen;
-    s_desktop_layout.StartMenuOpen = open;
-    s_activation_state.StartMenuOpen = open;
-    s_start_menu.Open = open;
-    Debug::Printf("[SMSS] Session %u Start menu %s\r\n",
-                  s_interactive.SessionId, open ? "opened" : "closed");
-
-    // Repaint the desktop so the menu shows/hides, then restore the cursor at
-    // the logical pointer position (StartDesktop parks it at a default spot).
+// Recompose the desktop and put the cursor back where the pointer is
+// (StartDesktop parks it at a default spot).
+static void RepaintDesktop() {
     DWM::PresentShellDesktop(s_compositor, s_shell_desktop, s_desktop_scene,
                              s_display_target, s_desktop_layout, s_theme);
     VGA::MoveMouseCursor(s_pointer_state.X, s_pointer_state.Y);
 }
 
+static void SetStartMenu(bool open) {
+    s_desktop_layout.StartMenuOpen = open;
+    s_activation_state.StartMenuOpen = open;
+    s_start_menu.Open = open;
+}
+
+// Open a cascaded window with the given title (top of the z-order).
+static void OpenWindow(const char* title) {
+    DESKTOPMODEL::DesktopLayout& L = s_desktop_layout;
+    if (L.WindowCount >= 8) {                 // recycle the oldest slot
+        for (u32 i = 1; i < L.WindowCount; ++i) L.Windows[i - 1] = L.Windows[i];
+        --L.WindowCount;
+    }
+    u32 i = L.WindowCount;
+    u32 cascade = i * 28;
+    DESKTOPMODEL::ShellWindow w{};
+    w.Title  = title ? title : "Window";
+    w.Status = "MicroNT window";
+    w.X = 320 + cascade;
+    w.Y = 140 + cascade;
+    w.Width = 560;
+    w.Height = 360;
+    w.Toolbar = true;
+    L.Windows[i] = w;
+    L.WindowCount = i + 1;
+    Debug::Printf("[SMSS] opened window '%s' (%u open)\r\n", w.Title, L.WindowCount);
+}
+
+static void CloseWindow(u32 idx) {
+    DESKTOPMODEL::DesktopLayout& L = s_desktop_layout;
+    if (idx >= L.WindowCount) return;
+    Debug::Printf("[SMSS] closed window '%s'\r\n",
+                  L.Windows[idx].Title ? L.Windows[idx].Title : "?");
+    for (u32 i = idx + 1; i < L.WindowCount; ++i) L.Windows[i - 1] = L.Windows[i];
+    --L.WindowCount;
+}
+
+// Raise a window to the top of the z-order (drawn last / on top).
+static void FocusWindow(u32 idx) {
+    DESKTOPMODEL::DesktopLayout& L = s_desktop_layout;
+    if (idx + 1 >= L.WindowCount) return;     // already on top or invalid
+    DESKTOPMODEL::ShellWindow w = L.Windows[idx];
+    for (u32 i = idx + 1; i < L.WindowCount; ++i) L.Windows[i - 1] = L.Windows[i];
+    L.Windows[L.WindowCount - 1] = w;
+    Debug::Printf("[SMSS] raised window '%s'\r\n", w.Title ? w.Title : "?");
+}
+
+static void ToggleStartMenu() {
+    bool open = !s_desktop_layout.StartMenuOpen;
+    SetStartMenu(open);
+    Debug::Printf("[SMSS] Session %u Start menu %s\r\n",
+                  s_interactive.SessionId, open ? "opened" : "closed");
+    RepaintDesktop();
+}
+
+static const char* const kStartApps[8] = {
+    "Edge", "Files", "Settings", "Store", "Photos", "Mail", "Notepad", "Terminal"
+};
+
 static void HandleShellClick(SHELLINPUT::HitTargetKind target, u32 index) {
+    using K = SHELLINPUT::HitTargetKind;
     switch (target) {
-    case SHELLINPUT::HitTargetKind::StartButton:
+    case K::StartButton:
         ToggleStartMenu();
         break;
-    case SHELLINPUT::HitTargetKind::StartMenu:
-        Debug::Printf("[SMSS] Session %u Start menu item %u activated\r\n",
-                      s_interactive.SessionId, index);
+    case K::StartMenu:                        // launch a pinned app, close menu
+        OpenWindow(kStartApps[index < 8 ? index : 0]);
+        SetStartMenu(false);
+        RepaintDesktop();
         break;
-    case SHELLINPUT::HitTargetKind::DesktopIcon:
-        Debug::Printf("[SMSS] Session %u desktop icon %u activated\r\n",
-                      s_interactive.SessionId, index);
+    case K::DesktopIcon:                      // open a window for the icon
+        if (index < s_desktop_layout.IconCount)
+            OpenWindow(s_desktop_layout.Icons[index].Label);
+        RepaintDesktop();
         break;
-    case SHELLINPUT::HitTargetKind::Taskbar:
-        Debug::Printf("[SMSS] Session %u taskbar button %u activated\r\n",
-                      s_interactive.SessionId, index);
+    case K::WindowClose:                      // close the window
+        CloseWindow(index);
+        RepaintDesktop();
+        break;
+    case K::ShellWindow:                      // raise/focus the window
+    case K::Taskbar:                          // taskbar button -> raise its window
+        FocusWindow(index);
+        RepaintDesktop();
         break;
     default:
         break;
     }
 }
 
-void PumpInteractiveInput() {
-    if (!s_pointer_state.HitTestingReady || !s_desktop_layout.Ready) return;
+// Window-drag state: a window is dragged by holding the left button on its
+// title bar (the 32 px strip below the top edge, excluding the [x] button).
+static bool s_dragging = false;
+static u32  s_drag_win = 0;
+static i32  s_drag_off_x = 0;
+static i32  s_drag_off_y = 0;
 
+bool PumpInteractiveInput() {
+    if (!s_pointer_state.HitTestingReady || !s_desktop_layout.Ready) return false;
+
+    bool changed = false;
     MOUSE::Packet packet{};
     while (MOUSE::TryRead(&packet)) {
         i32 mx = 0, my = 0;
         if (!MOUSE::CurrentPosition(&mx, &my)) break;
 
+        // Any mouse packet moved the cursor, which the IRQ already drew, so the
+        // frame needs flushing.
+        changed = true;
+
+        bool prev_down = s_pointer_state.LeftButtonDown;
         SHELLINPUT::PointerEvent event = SHELLINPUT::ProcessPointer(
             s_pointer_state, s_desktop_layout,
             static_cast<u32>(mx), static_cast<u32>(my), packet.Left);
+        bool down_now = packet.Left;
 
+        // Active drag: move the window with the cursor (grab point fixed),
+        // or end the drag on release.
+        if (s_dragging) {
+            if (down_now && s_drag_win < s_desktop_layout.WindowCount) {
+                DESKTOPMODEL::ShellWindow& w = s_desktop_layout.Windows[s_drag_win];
+                i32 nx = mx - s_drag_off_x;
+                i32 ny = my - s_drag_off_y;
+                w.X = nx > 0 ? (u32)nx : 0;
+                w.Y = ny > 0 ? (u32)ny : 0;
+                RepaintDesktop();
+            } else {
+                s_dragging = false;
+                RepaintDesktop();
+            }
+            continue;
+        }
+
+        // Press on a title bar -> raise the window and begin dragging it.
+        if (!prev_down && down_now &&
+            s_pointer_state.HotTarget == SHELLINPUT::HitTargetKind::ShellWindow) {
+            u32 i = s_pointer_state.TargetIndex;
+            if (i < s_desktop_layout.WindowCount &&
+                (u32)my < s_desktop_layout.Windows[i].Y + 32) {
+                FocusWindow(i);                          // raise to top
+                s_drag_win = s_desktop_layout.WindowCount - 1;
+                const DESKTOPMODEL::ShellWindow& w =
+                    s_desktop_layout.Windows[s_drag_win];
+                s_drag_off_x = mx - (i32)w.X;
+                s_drag_off_y = my - (i32)w.Y;
+                s_dragging = true;
+                RepaintDesktop();
+                continue;
+            }
+        }
+
+        // Otherwise a normal release-edge click.
         if (event.Clicked) {
             HandleShellClick(event.Target, event.TargetIndex);
         }
     }
+    return changed;
 }
 
 } // namespace SM

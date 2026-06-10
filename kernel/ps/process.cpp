@@ -63,6 +63,141 @@ static void StackPoke(u64 top, u32 slot, u64 value) {
     *p = value;
 }
 
+// ============================================================
+// Windows process environment: PEB / TEB
+//
+// VAs sit at ~8 TB, far above the 0-4 GB identity huge-page region and any
+// existing user mappings, so they map cleanly with 4 KB pages. Field offsets
+// follow the documented x64 PEB/TEB layout.
+// ============================================================
+constexpr u64 PEB_VA   = 0x7FFFE000000ULL;
+constexpr u64 TEB_BASE = 0x7FFFE100000ULL;
+
+// Reported OS identity (Windows 11 24H2) -- matches KUSER_SHARED_DATA.
+constexpr u32 OS_MAJOR = 10, OS_MINOR = 0, OS_BUILD = 26100;
+
+// PEB->Ldr area, one page above the PEB.
+constexpr u64 LDR_VA          = PEB_VA + 0x1000;   // PEB_LDR_DATA
+constexpr u64 LDR_ENTRY_OFF   = 0x80;              // LDR_DATA_TABLE_ENTRY
+constexpr u64 LDR_BASENAME_OFF= 0x140;
+constexpr u64 LDR_FULLNAME_OFF= 0x200;
+
+static void SetupPeb(KProcess* p) {
+    if (!p || !p->Cr3) return;
+    u64 phys = PMM::AllocPage();
+    if (!phys) return;
+    auto* peb = reinterpret_cast<u8*>(phys);   // identity-mapped (< RAM)
+    for (u32 i = 0; i < PAGE_SIZE; ++i) peb[i] = 0;
+    *reinterpret_cast<u64*>(peb + 0x010) = p->ImageBase;  // ImageBaseAddress
+    *reinterpret_cast<u64*>(peb + 0x018) = LDR_VA;        // Ldr (PEB_LDR_DATA*)
+    *reinterpret_cast<u32*>(peb + 0x118) = OS_MAJOR;      // OSMajorVersion
+    *reinterpret_cast<u32*>(peb + 0x11C) = OS_MINOR;      // OSMinorVersion
+    *reinterpret_cast<u16*>(peb + 0x120) = (u16)OS_BUILD; // OSBuildNumber
+    *reinterpret_cast<u32*>(peb + 0x124) = 2;             // OSPlatformId = VER_PLATFORM_WIN32_NT
+    p->PebVa = PEB_VA;
+    p->NextTebVa = TEB_BASE;
+    VMM::MapPageInto(p->Cr3, PEB_VA, phys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+
+    // PEB->Ldr: a walkable loaded-module list with one entry for the main
+    // image (three circular LIST_ENTRY chains, exactly as Windows builds it).
+    u64 lphys = PMM::AllocPage();
+    if (!lphys) return;
+    auto* L = reinterpret_cast<u8*>(lphys);
+    for (u32 i = 0; i < PAGE_SIZE; ++i) L[i] = 0;
+    auto wq = [&](u64 off, u64 v) { *reinterpret_cast<u64*>(L + off) = v; };
+    auto wd = [&](u64 off, u32 v) { *reinterpret_cast<u32*>(L + off) = v; };
+    auto ww = [&](u64 off, u16 v) { *reinterpret_cast<u16*>(L + off) = v; };
+
+    const u64 E = LDR_ENTRY_OFF;
+    const u64 entry_va = LDR_VA + E;
+    // PEB_LDR_DATA
+    wd(0x00, 0x58); wd(0x04, 1);                          // Length, Initialized
+    wq(0x10, entry_va + 0x00); wq(0x18, entry_va + 0x00); // InLoadOrderModuleList
+    wq(0x20, entry_va + 0x10); wq(0x28, entry_va + 0x10); // InMemoryOrderModuleList
+    wq(0x30, entry_va + 0x20); wq(0x38, entry_va + 0x20); // InInitializationOrderModuleList
+    // LDR_DATA_TABLE_ENTRY (links point back to the three list heads)
+    wq(E + 0x00, LDR_VA + 0x10); wq(E + 0x08, LDR_VA + 0x10);
+    wq(E + 0x10, LDR_VA + 0x20); wq(E + 0x18, LDR_VA + 0x20);
+    wq(E + 0x20, LDR_VA + 0x30); wq(E + 0x28, LDR_VA + 0x30);
+    wq(E + 0x30, p->ImageBase);                           // DllBase
+    wq(E + 0x38, 0);                                      // EntryPoint
+    wd(E + 0x40, 0);                                      // SizeOfImage
+    u32 nlen = 0; while (p->Name[nlen]) ++nlen;
+    ww(E + 0x48, (u16)(nlen * 2)); ww(E + 0x4A, (u16)(nlen * 2 + 2));
+    wq(E + 0x50, LDR_VA + LDR_FULLNAME_OFF);              // FullDllName.Buffer
+    ww(E + 0x58, (u16)(nlen * 2)); ww(E + 0x5A, (u16)(nlen * 2 + 2));
+    wq(E + 0x60, LDR_VA + LDR_BASENAME_OFF);              // BaseDllName.Buffer
+    auto* bn = reinterpret_cast<u16*>(L + LDR_BASENAME_OFF);
+    auto* fn = reinterpret_cast<u16*>(L + LDR_FULLNAME_OFF);
+    for (u32 i = 0; i < nlen; ++i) { bn[i] = (u16)(u8)p->Name[i]; fn[i] = (u16)(u8)p->Name[i]; }
+    VMM::MapPageInto(p->Cr3, LDR_VA, lphys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+
+    // PEB->ProcessParameters: RTL_USER_PROCESS_PARAMETERS with ImagePathName
+    // and CommandLine, as read by GetCommandLineW / the CRT startup.
+    u64 pphys = PMM::AllocPage();
+    if (!pphys) return;
+    auto* P = reinterpret_cast<u8*>(pphys);
+    for (u32 i = 0; i < PAGE_SIZE; ++i) P[i] = 0;
+    constexpr u64 PARAMS_VA = PEB_VA + 0x2000;
+    constexpr u64 IMG_OFF = 0x100, CMD_OFF = 0x200;
+    *reinterpret_cast<u32*>(P + 0x00) = PAGE_SIZE;   // MaximumLength
+    *reinterpret_cast<u32*>(P + 0x04) = PAGE_SIZE;   // Length
+    // ImagePathName = "C:\Windows\<name>"
+    char path[96]; u32 pl = 0;
+    const char* pre = "C:\\Windows\\";
+    for (u32 i = 0; pre[i]; ++i) path[pl++] = pre[i];
+    for (u32 i = 0; p->Name[i] && pl < 94; ++i) path[pl++] = p->Name[i];
+    path[pl] = 0;
+    auto* iw = reinterpret_cast<u16*>(P + IMG_OFF);
+    for (u32 i = 0; i < pl; ++i) iw[i] = (u16)(u8)path[i];
+    *reinterpret_cast<u16*>(P + 0x60) = (u16)(pl * 2);       // ImagePathName.Length
+    *reinterpret_cast<u16*>(P + 0x62) = (u16)(pl * 2 + 2);
+    *reinterpret_cast<u64*>(P + 0x68) = PARAMS_VA + IMG_OFF; // .Buffer
+    // CommandLine = "<name>"
+    auto* cw = reinterpret_cast<u16*>(P + CMD_OFF);
+    for (u32 i = 0; i < nlen; ++i) cw[i] = (u16)(u8)p->Name[i];
+    *reinterpret_cast<u16*>(P + 0x70) = (u16)(nlen * 2);     // CommandLine.Length
+    *reinterpret_cast<u16*>(P + 0x72) = (u16)(nlen * 2 + 2);
+    *reinterpret_cast<u64*>(P + 0x78) = PARAMS_VA + CMD_OFF; // .Buffer
+    *reinterpret_cast<u64*>(peb + 0x20) = PARAMS_VA;         // PEB.ProcessParameters
+    VMM::MapPageInto(p->Cr3, PARAMS_VA, pphys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+
+    // PEB.ProcessHeap: a committed region GetProcessHeap()/HeapAlloc build on.
+    u64 hphys = PMM::AllocPage();
+    if (hphys) {
+        auto* H = reinterpret_cast<u8*>(hphys);
+        for (u32 i = 0; i < PAGE_SIZE; ++i) H[i] = 0;
+        constexpr u64 HEAP_VA = PEB_VA + 0x3000;
+        *reinterpret_cast<u64*>(peb + 0x30) = HEAP_VA;        // PEB.ProcessHeap
+        VMM::MapPageInto(p->Cr3, HEAP_VA, hphys,
+                         VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+    }
+}
+
+static u64 SetupTeb(KProcess* p, u32 tid, u64 user_stack_top) {
+    if (!p || !p->Cr3 || !p->PebVa) return 0;
+    u64 teb_va = p->NextTebVa;
+    p->NextTebVa += 0x2000;   // one page + guard slot
+    u64 phys = PMM::AllocPage();
+    if (!phys) return 0;
+    auto* teb = reinterpret_cast<u8*>(phys);
+    for (u32 i = 0; i < PAGE_SIZE; ++i) teb[i] = 0;
+    *reinterpret_cast<u64*>(teb + 0x08) = user_stack_top;   // NT_TIB.StackBase
+    *reinterpret_cast<u64*>(teb + 0x30) = teb_va;           // NT_TIB.Self
+    *reinterpret_cast<u64*>(teb + 0x40) = p->Pid;           // ClientId.UniqueProcess
+    *reinterpret_cast<u64*>(teb + 0x48) = tid;              // ClientId.UniqueThread
+    *reinterpret_cast<u64*>(teb + 0x60) = p->PebVa;         // ProcessEnvironmentBlock
+    // ThreadLocalStoragePointer -> a zeroed 64-slot TLS array inside this page
+    // (TEB is otherwise unused past 0x68; 0x800 is comfortably clear).
+    *reinterpret_cast<u64*>(teb + 0x58) = teb_va + 0x800;
+    VMM::MapPageInto(p->Cr3, teb_va, phys,
+                     VMM::PTE_PRESENT | VMM::PTE_WRITABLE | VMM::PTE_USER);
+    return teb_va;
+}
+
 } // anonymous namespace
 
 // ============================================================
@@ -118,6 +253,20 @@ void Init() {
     KDBG_INFO("PS: initialized (PID=%u TID=%u)", s_system_process->Pid, s_main_thread->Tid);
 }
 
+void NotifyImageLoaded(u64 cr3, u64 image_base) {
+    for (u32 i = 0; i < s_proc_count; ++i) {
+        KProcess* p = s_proc_reg[i];
+        if (!p || p->Cr3 != cr3 || !p->PebVa) continue;
+        p->ImageBase = image_base;
+        // Patch the live structures in the process address space.
+        u64 ph = VMM::TranslateInPml4(cr3, PEB_VA + 0x10);
+        if (ph) *reinterpret_cast<u64*>(ph) = image_base;     // PEB.ImageBaseAddress
+        u64 lh = VMM::TranslateInPml4(cr3, LDR_VA + LDR_ENTRY_OFF + 0x30);
+        if (lh) *reinterpret_cast<u64*>(lh) = image_base;     // Ldr entry DllBase
+        return;
+    }
+}
+
 KProcess* CreateProcess(const char* name, u64 cr3) {
     auto* p = static_cast<KProcess*>(
         KernelHeap::AllocZeroed(sizeof(KProcess), alignof(KProcess)));
@@ -128,6 +277,7 @@ KProcess* CreateProcess(const char* name, u64 cr3) {
     p->UserHeapCursor = 0x500000000ULL;  // each process starts its own heap here
     if (name) for (int i = 0; i < 31 && name[i]; ++i) p->Name[i] = name[i];
     if (s_proc_count < 32) s_proc_reg[s_proc_count++] = p; // M19 registry
+    SetupPeb(p);   // Windows compat: per-process PEB at 0x7FFFE000000
     return p;
 }
 
@@ -234,8 +384,11 @@ KThread* CreateUserThread(KProcess* process, const char* name,
     t->Prev            = nullptr;
     if (name) for (int i = 0; i < 31 && name[i]; ++i) t->Name[i] = name[i];
 
-    KDBG_TRACE("PS: CreateUserThread '%s' TID=%u entry=0x%llx user_rsp=0x%llx",
-               t->Name, t->Tid, user_entry_va, user_stack_va);
+    // Windows compat: give the thread a TEB (GS base) linked to the PEB.
+    t->TebVa = SetupTeb(t->Process, t->Tid, user_stack_va);
+
+    KDBG_TRACE("PS: CreateUserThread '%s' TID=%u entry=0x%llx user_rsp=0x%llx teb=0x%llx",
+               t->Name, t->Tid, user_entry_va, user_stack_va, t->TebVa);
     // M32: register in global thread table for kill-by-PID
     if (s_thread_count < 64) s_thread_reg[s_thread_count++] = t;
     return t;

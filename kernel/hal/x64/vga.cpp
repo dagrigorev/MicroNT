@@ -4,6 +4,7 @@
 #include "../../include/ntdef.h"
 #include "../../include/bootinfo.h"
 #include "../../include/hal.h"
+#include "../../include/desktop_icons.h"
 
 namespace VGA {
 
@@ -401,38 +402,153 @@ static void DrawAppTile(u32 x, u32 y, u32 size, u32 badge, char letter,
     DrawTextAbs(x + size / 2 - 4, y + size / 2 - 8, s, 0xFFFFFF, badge);
 }
 
-static void DrawDesktopIcon(u32 x, u32 y, const char* label, u32 body, u32 shade) {
-    FillVerticalGradient(x + 17, y + 7, 42, 42, 0xFFFFFF, body);
-    FillRect(x + 23, y + 13, 30, 21, shade);
-    RectOutline(x + 17, y + 7, 42, 42, 0xFFFFFF, 0x375E9B);
-    FillRect(x + 4, y + 56, 72, 16, 0x247DD8);
-    DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
+// --- Alpha compositing + rounded shapes (for SVG-derived desktop icons) ---
+
+// Native framebuffer pixel -> 0xRRGGBB (inverse of ToPixel).
+static u32 FromPixel(u32 px) {
+    if (s_fb_bgr) {
+        u32 b = px & 0xFF, g = (px >> 8) & 0xFF, r = (px >> 16) & 0xFF;
+        return (r << 16) | (g << 8) | b;
+    }
+    u32 r = px & 0xFF, g = (px >> 8) & 0xFF, b = (px >> 16) & 0xFF;
+    return (r << 16) | (g << 8) | b;
 }
 
-static void DrawFolderIcon(u32 x, u32 y, const char* label) {
-    FillRect(x + 18, y + 15, 38, 30, 0xFFC229);
-    FillRect(x + 22, y + 8, 20, 9, 0xFFE27A);
-    RectOutline(x + 18, y + 15, 38, 30, 0xFFF2A2, 0xDC8611);
-    FillRect(x + 4, y + 56, 72, 16, 0x247DD8);
-    DrawTextAbs(x + 7, y + 56, label, 0xFFFFFF, 0x247DD8);
+static u32 Isqrt(u32 v) {
+    u32 r = 0;
+    while ((r + 1) * (r + 1) <= v) ++r;
+    return r;
+}
+
+// Blend rgb toward white by t/255.
+static u32 Lighten(u32 rgb, u32 t) {
+    u32 r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+    r += ((255 - r) * t) / 255;
+    g += ((255 - g) * t) / 255;
+    b += ((255 - b) * t) / 255;
+    return (r << 16) | (g << 8) | b;
+}
+
+static void FillRoundRect(u32 x, u32 y, u32 w, u32 h, u32 r, u32 rgb) {
+    if (w == 0 || h == 0) return;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    for (u32 row = 0; row < h; ++row) {
+        u32 inset = 0;
+        if (row < r) {
+            u32 dy = r - row;
+            inset = r - Isqrt(r * r - dy * dy);
+        } else if (row >= h - r) {
+            u32 dy = row - (h - r) + 1;
+            inset = r - Isqrt(r * r - dy * dy);
+        }
+        FillRect(x + inset, y + row, w - 2 * inset, 1, rgb);
+    }
+}
+
+// Composite an 8-bit coverage mask onto the framebuffer in color rgb.
+static void BlitGlyphAlpha(u32 x, u32 y, const unsigned char* a,
+                           u32 gw, u32 gh, u32 rgb) {
+    if (!s_fb || !a) return;
+    u32 sr = (rgb >> 16) & 0xFF, sg = (rgb >> 8) & 0xFF, sb = rgb & 0xFF;
+    for (u32 j = 0; j < gh; ++j) {
+        if (y + j >= s_fb_h) break;
+        for (u32 i = 0; i < gw; ++i) {
+            if (x + i >= s_fb_w) continue;
+            u8 al = a[j * gw + i];
+            if (!al) continue;
+            u32* p = &s_fb[(y + j) * s_fb_stride + (x + i)];
+            if (al == 255) { *p = ToPixel(rgb); continue; }
+            u32 d = FromPixel(*p);
+            u32 dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+            u32 rr = (sr * al + dr * (255 - al)) / 255;
+            u32 gg = (sg * al + dg * (255 - al)) / 255;
+            u32 bb = (sb * al + db * (255 - al)) / 255;
+            *p = ToPixel((rr << 16) | (gg << 8) | bb);
+        }
+    }
+}
+
+// Transparent (no background box) text -- for labels over the wallpaper.
+static void DrawGlyphTransparent(u32 px, u32 py, u8 ch, u32 fg) {
+    if (!s_fb) return;
+    const u8* g = &s_font[(u32)ch * 16];
+    u32 c = ToPixel(fg);
+    for (u32 r = 0; r < CHAR_H; ++r) {
+        if (py + r >= s_fb_h) break;
+        u32* line = s_fb + (py + r) * s_fb_stride + px;
+        u8 bits = g[r];
+        for (u32 cc = 0; cc < CHAR_W; ++cc)
+            if ((bits & (0x80u >> cc)) && px + cc < s_fb_w) line[cc] = c;
+    }
+}
+
+static void DrawTextTransparent(u32 x, u32 y, const char* s, u32 fg) {
+    for (u32 i = 0; s && s[i]; ++i)
+        DrawGlyphTransparent(x + i * CHAR_W, y, (u8)s[i], fg);
+}
+
+// XP-gloss tile + Windows 11 Fluent glyph + floating label. Slot is 96 wide.
+static const u32 s_icon_tile[6] = {
+    0x2F6FD0,  // Computer  - blue
+    0xF2B431,  // Folder    - amber
+    0x16A085,  // Network   - teal
+    0xE0552B,  // Media     - orange
+    0x5B6CC4,  // Control   - indigo
+    0x8AA0B4,  // Recycle   - slate
+};
+
+static void DrawShellIcon(u32 x, u32 y, u32 kind, const char* label) {
+    if (kind >= 6) kind = 0;
+    u32 tile = s_icon_tile[kind];
+    u32 tw = 60, th = 60;
+    u32 tx = x + (96 - tw) / 2;
+    u32 ty = y + 2;
+
+    FillRoundRect(tx + 2, ty + 4, tw, th, 13, 0x12243C);            // drop shadow
+    FillRoundRect(tx, ty, tw, th, 13, tile);                        // tile body
+    FillRoundRect(tx + 3, ty + 3, tw - 6, (th * 44) / 100, 10,
+                  Lighten(tile, 90));                               // XP gloss sheen
+
+    const unsigned char* a = DESKTOP_ICON_ALPHA[kind];
+    u32 gx = tx + (tw - DESKTOP_ICON_W) / 2;
+    u32 gy = ty + (th - DESKTOP_ICON_H) / 2;
+    BlitGlyphAlpha(gx, gy, a, DESKTOP_ICON_W, DESKTOP_ICON_H, 0xFFFFFF);
+
+    u32 len = 0;
+    while (label && label[len]) ++len;
+    u32 text_w = len * CHAR_W;
+    u32 lx = text_w < 96 ? x + (96 - text_w) / 2 : x;
+    u32 ly = y + 68;
+    DrawTextTransparent(lx + 1, ly + 1, label, 0x0A1A30);          // shadow
+    DrawTextTransparent(lx, ly, label, 0xFFFFFF);
 }
 
 // Flat Windows 11 control glyphs (minimize / maximize / close) on a light
 // title bar.  Close is tinted red so it reads as the close affordance.
-static void DrawWinControls(u32 x, u32 y, u32 w, u32 th, u32 surface) {
+// Flat Windows 11 control glyphs drawn transparently in `ink` (works over a
+// solid Mica title or a glossy Luna gradient).
+static void DrawWinControls(u32 x, u32 y, u32 w, u32 th, u32 ink) {
     u32 cw = 46;
     u32 mid = y + th / 2;
-    FillRect(x + w - 3 * cw + cw / 2 - 5, mid, 11, 1, 0x202020);          // _
-    RectOutline(x + w - 2 * cw + cw / 2 - 5, mid - 5, 11, 11,
-                0x6A6A6A, 0x6A6A6A);                                      // []
-    DrawTextAbs(x + w - cw + cw / 2 - 4, mid - 8, "x", 0xC42B1C, surface); // x
+    FillRect(x + w - 3 * cw + cw / 2 - 5, mid, 11, 1, ink);               // _
+    RectOutline(x + w - 2 * cw + cw / 2 - 5, mid - 5, 11, 11, ink, ink);  // []
+    DrawTextTransparent(x + w - cw + cw / 2 - 4, mid - 8, "x", ink);      // x
+}
+
+// Glossy XP "Luna" title bar with white text + controls.
+static void DrawLunaTitle(u32 x, u32 y, u32 w, u32 th, const char* title) {
+    FillVerticalGradient(x + 1, y + 1, w - 2, th - 1, 0x4090F4, 0x1B5BD0);
+    FillVerticalGradient(x + 1, y + 1, w - 2, th / 3, 0x8FC0FF, 0x4A9AF6);  // gloss
+    DrawTextTransparent(x + 14, y + (th - 16) / 2, title, 0xFFFFFF);
+    DrawWinControls(x, y, w, th, 0xFFFFFF);
+    FillRect(x, y + th, w, 1, 0x12407F);                                    // divider
 }
 
 static void DrawPanelWindow(u32 x, u32 y, u32 w, u32 h, const char* title,
                             bool toolbar, const char* status) {
-    const u32 surface = 0xF3F3F3;   // light Mica
+    const u32 surface = 0xF3F3F3;   // light Mica body (Win11)
     const u32 border  = 0xDADADA;
-    const u32 ink     = 0x1A1A1A;
     const u32 navbg   = 0xEAEAEA;
     const u32 accent  = 0x0078D4;
     u32 th = 32;
@@ -440,9 +556,7 @@ static void DrawPanelWindow(u32 x, u32 y, u32 w, u32 h, const char* title,
     FillRect(x + 6, y + 9, w, h, 0x0E2348);             // soft drop shadow
     FillRect(x, y, w, h, surface);                      // body
     RectOutline(x, y, w, h, border, border);            // thin border
-    DrawTextAbs(x + 14, y + (th - 16) / 2, title, ink, surface);
-    FillRect(x, y + th, w, 1, 0xE6E6E6);                // hairline divider
-    DrawWinControls(x, y, w, th, surface);
+    DrawLunaTitle(x, y, w, th, title);                  // XP glossy title bar
 
     u32 cy = y + th + 1;
     if (toolbar) {
@@ -695,22 +809,27 @@ void StartDesktop(const UXTHEME::Theme& theme,
     if (!s_fb) return;
     s_mouse_visible = false;
 
-    // Windows 11 "Bloom" wallpaper: deep-blue field with a centered radial glow
-    // built from concentric ellipses (no alpha blending in the framebuffer).
-    FillVerticalGradient(0, 0, s_fb_w, s_fb_h, theme.WallpaperTop,
+    // XP "Bliss" x 11 wallpaper: a clean blue sky fading to a pale horizon,
+    // a few soft clouds and a gentle bloom glow, over green rolling hills.
+    u32 hill_y = (s_fb_h * 62) / 100;
+    FillVerticalGradient(0, 0, s_fb_w, hill_y, theme.WallpaperTop,
                          theme.WallpaperBottom);
-    u32 cx = s_fb_w / 2;
-    u32 cy = (s_fb_h * 42) / 100;
-    FillEllipse(cx, cy, (s_fb_w * 46) / 100, (s_fb_h * 46) / 100, 0x0E2E66);
-    FillEllipse(cx, cy, (s_fb_w * 34) / 100, (s_fb_h * 34) / 100, 0x123C82);
-    FillEllipse(cx, cy, (s_fb_w * 24) / 100, (s_fb_h * 24) / 100, 0x1A52A8);
-    FillEllipse(cx, cy, (s_fb_w * 15) / 100, (s_fb_h * 15) / 100, 0x2A6FD0);
-    FillEllipse(cx, cy, (s_fb_w *  8) / 100, (s_fb_h *  8) / 100, 0x4A93F0);
-    // Bloom "petals" -- offset translucent-looking flares around the core.
-    FillEllipse(cx - s_fb_w / 8, cy - s_fb_h / 9, s_fb_w / 9, s_fb_h / 14, 0x2360C4);
-    FillEllipse(cx + s_fb_w / 7, cy + s_fb_h / 10, s_fb_w / 8, s_fb_h / 13, 0x1C57B6);
-    FillEllipse(cx + s_fb_w / 9, cy - s_fb_h / 8, s_fb_w / 11, s_fb_h / 16, 0x3A82E0);
-    u32 h1 = (s_fb_h * 60) / 100;   // reference band for the default cursor parking
+    // Soft Win11-style bloom high in the sky.
+    u32 bx0 = (s_fb_w * 64) / 100, by0 = (s_fb_h * 20) / 100;
+    FillEllipse(bx0, by0, s_fb_w / 8, s_fb_h / 16, 0x7FC0FF);
+    FillEllipse(bx0, by0, s_fb_w / 13, s_fb_h / 26, 0xBEE3FF);
+    // Drifting clouds.
+    FillEllipse(s_fb_w / 6, s_fb_h / 6, s_fb_w / 11, s_fb_h / 40, 0xFFFFFF);
+    FillEllipse(s_fb_w / 4, s_fb_h / 6 - 14, s_fb_w / 14, s_fb_h / 34, 0xF2FAFF);
+    FillEllipse((s_fb_w * 82) / 100, s_fb_h / 4, s_fb_w / 12, s_fb_h / 40, 0xFFFFFF);
+    // Green rolling hills with a lighter sunlit mound.
+    FillVerticalGradient(0, hill_y, s_fb_w, s_fb_h - hill_y, 0x8FCB5A, 0x2C7A24);
+    FillEllipse(s_fb_w / 2, hill_y + (s_fb_h - hill_y) / 2,
+                (s_fb_w * 70) / 100, (s_fb_h - hill_y), 0x7FC04A);
+    FillEllipse((s_fb_w * 22) / 100, hill_y + 30,
+                (s_fb_w * 28) / 100, (s_fb_h - hill_y) / 2, 0xA6DC6E);
+    FillRect(0, hill_y, s_fb_w, 2, 0xE9F6D4);   // sunlit crest line
+    u32 h1 = hill_y;   // reference band for the default cursor parking
 
     DESKTOPMODEL::TaskbarMetrics tb =
         DESKTOPMODEL::ComputeTaskbar(s_fb_w, s_fb_h, layout.WindowCount);
@@ -719,29 +838,9 @@ void StartDesktop(const UXTHEME::Theme& theme,
 
     u32 icon_x = 18, icon_y = 14;
     for (u32 i = 0; i < layout.IconCount; ++i) {
-        u32 y = icon_y + i * 82;
+        u32 y = icon_y + i * 92;
         const DESKTOPMODEL::DesktopIcon& icon = layout.Icons[i];
-        switch (icon.Kind) {
-        case DESKTOPMODEL::IconKind::Folder:
-            DrawFolderIcon(icon_x, y, icon.Label);
-            break;
-        case DESKTOPMODEL::IconKind::Network:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0x0C8BE8, 0x07418D);
-            break;
-        case DESKTOPMODEL::IconKind::Media:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0xFF6D14, 0xFFBD4A);
-            break;
-        case DESKTOPMODEL::IconKind::Control:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0x46A8FF, 0x1A55B7);
-            break;
-        case DESKTOPMODEL::IconKind::Recycle:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0xADC4D7, 0x6E8297);
-            break;
-        case DESKTOPMODEL::IconKind::Computer:
-        default:
-            DrawDesktopIcon(icon_x, y, icon.Label, 0x439AFF, 0x12356B);
-            break;
-        }
+        DrawShellIcon(icon_x, y, (u32)icon.Kind, icon.Label);
     }
 
     for (u32 i = 0; i < layout.WindowCount; ++i) {
@@ -755,21 +854,29 @@ void StartDesktop(const UXTHEME::Theme& theme,
         DrawPanelWindow(x, y, w, h, win.Title, win.Toolbar, win.Status);
     }
 
-    // --- Windows 11 taskbar: flat dark, full-width, centered icon cluster ---
+    // --- Taskbar: XP Luna glossy blue bar, Win11 centered icon cluster ---
     FillVerticalGradient(0, task_y, s_fb_w, task_h,
                          theme.TaskbarTop, theme.TaskbarBottom);
-    FillRect(0, task_y, s_fb_w, 1, 0x3C3C3C);
+    FillRect(0, task_y, s_fb_w, 1, Lighten(theme.TaskbarTop, 80));   // top highlight
+    FillVerticalGradient(0, task_y + 1, s_fb_w, task_h / 3,
+                         Lighten(theme.TaskbarTop, 60), theme.TaskbarTop);  // gloss
+    FillRect(0, task_y + task_h - 1, s_fb_w, 1, 0x0A2A78);
 
-    // Start button (Windows logo), centered with the app cluster.
+    // Start button: green XP gloss pill behind the Win11 four-square logo.
     {
+        u32 pill_w = tb.StartW, pill_h = task_h - 10;
+        u32 px = tb.StartX, py = task_y + 5;
+        FillRoundRect(px, py, pill_w, pill_h, pill_h / 2, theme.StartBottom);
+        FillRoundRect(px + 2, py + 2, pill_w - 4, pill_h / 2,
+                      pill_h / 3, Lighten(theme.StartTop, 60));
         u32 logo_cell = 8, logo_gap = 3;
         u32 logo_dim = 2 * logo_cell + logo_gap;
-        u32 lx = tb.StartX + (tb.StartW - logo_dim) / 2;
+        u32 lx = px + (pill_w - logo_dim) / 2;
         u32 ly = task_y + (task_h - logo_dim) / 2;
-        DrawWinLogo(lx, ly, logo_cell, logo_gap, 0x4CC2FF);
+        DrawWinLogo(lx, ly, logo_cell, logo_gap, 0xFFFFFF);
     }
 
-    // Pinned/running app buttons.
+    // Pinned/running app buttons (glossy tiles).
     static const u32 s_badge[] = {
         0x0078D4, 0xCA5010, 0x107C10, 0x8764B8, 0xC30052, 0x0099BC
     };
@@ -780,14 +887,21 @@ void StartDesktop(const UXTHEME::Theme& theme,
         u32 bx = tb.FirstButtonX + i * slot;
         u32 tx = bx + (tb.ButtonW - tile) / 2;
         bool active = (i == 0);
+        if (active) {
+            FillRoundRect(bx + 2, task_y + 4, tb.ButtonW - 4, task_h - 8, 6,
+                          Lighten(theme.TaskbarTop, 40));
+        }
         u32 badge = s_badge[i % (sizeof(s_badge) / sizeof(s_badge[0]))];
         const char* title = layout.Windows[i].Title;
-        DrawAppTile(tx, tile_y, tile, badge, title ? title[0] : '?',
-                    active ? 0x383838 : theme.TaskbarBottom);
+        FillRoundRect(tx, tile_y, tile, tile, 8, badge);
+        FillRoundRect(tx + 2, tile_y + 2, tile - 4, tile / 2, 6,
+                      Lighten(badge, 80));
+        char one[2] = { title ? title[0] : '?', 0 };
+        DrawTextTransparent(tx + tile / 2 - 4, tile_y + tile / 2 - 8, one,
+                            0xFFFFFF);
         if (active) {
-            // Win11 active-app underline pill.
-            FillRect(bx + tb.ButtonW / 2 - 8, task_y + task_h - 4, 16, 3,
-                     theme.Accent);
+            FillRect(bx + tb.ButtonW / 2 - 9, task_y + task_h - 4, 18, 3,
+                     0xFFE27A);   // glossy amber active underline
         }
     }
 
@@ -850,9 +964,7 @@ void StartDesktop(const UXTHEME::Theme& theme,
     FillRect(win_x, win_y, win_w, win_h, cmd_surface);
     RectOutline(win_x, win_y, win_w, win_h, 0xDADADA, 0xDADADA);
 
-    DrawTextAbs(win_x + 14, win_y + 8, "MicroNT Terminal", 0x1A1A1A, cmd_surface);
-    FillRect(win_x, win_y + 32, win_w, 1, 0xE6E6E6);
-    DrawWinControls(win_x, win_y, win_w, 32, cmd_surface);
+    DrawLunaTitle(win_x, win_y, win_w, 32, "MicroNT Terminal");
 
     u32 client_x = win_x + 8;
     u32 client_y = win_y + 40;
@@ -865,14 +977,14 @@ void StartDesktop(const UXTHEME::Theme& theme,
 
     ResetTextSurface(client_x, client_y, client_w, client_h);
 
-    const char hdr[] = "*** MicroNT Shell - Windows 11 style ***";
+    const char hdr[] = "*** MicroNT Shell - XP . 11 Fusion ***";
     u32 hlen = sizeof(hdr) - 1;
     u32 hstart = (s_cols > hlen) ? (s_cols - hlen) / 2 : 0;
     for (u32 c = 0; c < s_cols; ++c) s_cells[0][c] = { ' ', 0x1F };
     for (u32 i = 0; i < hlen && hstart + i < s_cols; ++i)
         s_cells[0][hstart + i] = { (u8)hdr[i], 0x1F };
     RedrawAll();
-    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   1920 x 1080 desktop target", 0x000000, theme.WindowFrame);
+    DrawTextAbs(win_x + 12, win_y + win_h - 23, "Ready   MicroNT desktop session", 0x000000, theme.WindowFrame);
     MoveMouseCursor(s_fb_w > 240 ? s_fb_w - 220 : win_x + win_w - 82,
                     h1 > 140 ? h1 - 120 : win_y + 74);
 }

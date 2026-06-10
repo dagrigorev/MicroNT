@@ -74,6 +74,10 @@ struct KThread {
 
     // M15: exception handler VA (0 = none)
     u64         ExceptionHandler;
+
+    // Windows compat: per-thread TEB virtual address (0 = none/kernel thread).
+    // Loaded into the user GS base when this thread is scheduled.
+    u64         TebVa;
 };
 
 // ============================================================
@@ -94,6 +98,12 @@ struct KProcess {
     u32         thread_count;
     bool        exited;
     KThread*    exit_waiters;       // threads waiting for this process to exit
+
+    // Windows compat: PEB virtual address (0 = none) and the next TEB VA to
+    // hand out for threads of this process.
+    u64         PebVa;
+    u64         NextTebVa;
+    u64         ImageBase;   // main module base (PEB.ImageBaseAddress / Ldr DllBase)
 };
 
 // ============================================================
@@ -118,6 +128,11 @@ KThread*  CreateUserThread(KProcess* process, const char* name,
                              usize kernel_stack_size = 16384);
 
 [[noreturn]] void TerminateCurrentThread(i32 exit_code = 0);
+
+// Called by the PE loader after an image is mapped: records the image base and
+// patches PEB.ImageBaseAddress + the PEB->Ldr main-module DllBase for the
+// process whose address space is `cr3`.
+void NotifyImageLoaded(u64 cr3, u64 image_base);
 
 KProcess* SystemProcess();
 KThread*  MainThread();

@@ -72,6 +72,11 @@ inline void WriteMsr(u32 msr, u64 value) {
 inline void EnableInterrupts()  { __asm__ volatile("sti"); }
 inline void DisableInterrupts() { __asm__ volatile("cli"); }
 
+// Sleep the CPU until the next interrupt (timer/keyboard/mouse). Ensures
+// interrupts are enabled first so we never halt forever. Used by the idle
+// loop so an idle desktop doesn't peg the (v)CPU at 100%.
+inline void HaltUntilInterrupt() { __asm__ volatile("sti; hlt"); }
+
 inline u64 ReadCr2() {
     u64 val;
     __asm__ volatile("mov %%cr2, %0" : "=r"(val));

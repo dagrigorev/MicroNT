@@ -142,6 +142,11 @@ static void ScheduleInternal() {
     // Update TSS.RSP0 so hardware interrupts from ring-3 land on the right stack
     HAL::SetTSSRsp0(next->KernelStackBase + next->KernelStackSize);
 
+    // Windows compat: load the user GS base with this thread's TEB (0 for
+    // kernel threads). This kernel doesn't SWAPGS, so the value persists into
+    // ring-3 and into syscalls, where GS:[0x30]=TEB.Self, GS:[0x60]=PEB.
+    HAL::WriteMsr(0xC0000101, next->TebVa);
+
     // Actual register/stack swap
     switch_context(prev, next);
     // Returns here when 'prev' is scheduled back.

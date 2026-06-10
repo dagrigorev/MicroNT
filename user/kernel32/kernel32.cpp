@@ -1,48 +1,184 @@
-// kernel32.cpp - MicroNT kernel32.dll stub
-// TODO(M8): Forward to ntdll syscall stubs and implement Win32 wrappers.
-
+// kernel32.cpp -- MicroNT kernel32.dll: a real Win32 surface over NT syscalls.
+// Built freestanding by scripts/build-user.ps1 (clang + lld-link /dll) and
+// loaded by the kernel; EXEs import these by name.
 #include <stdint.h>
 
-using BOOL   = int;
-using DWORD  = uint32_t;
-using HANDLE = void*;
-using PVOID  = void*;
-using LPVOID = void*;
+using i64 = int64_t;
+using u64 = uint64_t;
+using u32 = uint32_t;
+using u16 = uint16_t;
+using u8  = uint8_t;
 
-constexpr HANDLE INVALID_HANDLE_VALUE = reinterpret_cast<HANDLE>(-1LL);
-constexpr DWORD  STD_INPUT_HANDLE  = (DWORD)-10;
-constexpr DWORD  STD_OUTPUT_HANDLE = (DWORD)-11;
-constexpr DWORD  STD_ERROR_HANDLE  = (DWORD)-12;
+// MicroNT syscall ABI: number in RAX, args RDI/RSI/RDX, result RAX.
+static inline i64 sc(i64 n, i64 a1, i64 a2, i64 a3) {
+    i64 r;
+    // The kernel's syscall entry rearranges args through r8/r9/r10 and SYSRET
+    // clobbers rcx/r11. All must be in the clobber list, or the compiler will
+    // wrongly assume callee args kept in r8/r9 survive the call.
+    __asm__ volatile("syscall" : "=a"(r)
+                     : "a"(n), "D"(a1), "S"(a2), "d"(a3)
+                     : "rcx", "r11", "r8", "r9", "r10", "memory");
+    return r;
+}
+
+// 4-arg variant: a4 goes in r10 (the kernel's syscall entry reads it there).
+static inline i64 sc4(i64 n, i64 a1, i64 a2, i64 a3, i64 a4) {
+    i64 r;
+    register i64 r10 __asm__("r10") = a4;
+    __asm__ volatile("syscall" : "=a"(r)
+                     : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10)
+                     : "rcx", "r11", "r8", "r9", "memory");
+    return r;
+}
+
+enum { NT_TERMINATE_THREAD = 1, NT_WRITE_FILE = 4,
+       NT_CREATE_FILE = 6, NT_READ_FILE = 7, NT_CLOSE_HANDLE = 8,
+       NT_ALLOC_VM = 10, NT_GET_MODULE_BASE = 41, NT_LOAD_LIBRARY = 42 };
+
+static bool streq(const char* a, const char* b) {
+    while (*a && *a == *b) { ++a; ++b; }
+    return *a == *b;
+}
+
+// PEB pointer from the TEB (GS:[0x60]).
+static inline u64 peb() {
+    u64 p;
+    __asm__ volatile("movq %%gs:0x60, %0" : "=r"(p));
+    return p;
+}
 
 extern "C" {
 
-// GetStdHandle — TODO(M8): return actual console object handles
-__declspec(dllexport)
-HANDLE GetStdHandle(DWORD nStdHandle) {
-    // Encode the handle number directly for now
-    return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(nStdHandle));
+// Std handles encode directly to the kernel's console handle (stdout = 1).
+__declspec(dllexport) void* GetStdHandle(u32 /*nStdHandle*/) {
+    return reinterpret_cast<void*>((u64)1);
 }
 
-// WriteFile — TODO(M8): issue NtWriteFile syscall
-__declspec(dllexport)
-BOOL WriteFile(HANDLE hFile, PVOID lpBuffer, DWORD nNumberOfBytesToWrite,
-               DWORD* lpNumberOfBytesWritten, PVOID lpOverlapped) {
-    // Stub: claim success, write 0 bytes
-    if (lpNumberOfBytesWritten) *lpNumberOfBytesWritten = 0;
+__declspec(dllexport) int WriteFile(void* hFile, const void* buf, u32 len,
+                                    u32* written, void* /*overlapped*/) {
+    i64 n = sc(NT_WRITE_FILE, (i64)(u64)hFile, (i64)(u64)buf, (i64)len);
+    if (written) *written = (u32)n;
     return 1;
 }
 
-// ExitProcess — TODO(M8): NtTerminateProcess
-__declspec(dllexport)
-[[noreturn]] void ExitProcess(DWORD uExitCode) {
-    for (;;) __asm__("hlt");
+__declspec(dllexport) void ExitProcess(u32 code) {
+    sc(NT_TERMINATE_THREAD, (i64)(u64)code, 0, 0);
+    for (;;) {}
 }
 
-// GetLastError — TODO(M8): TEB-based
-__declspec(dllexport)
-DWORD GetLastError() { return 0; }
+// TEB-backed (GS): LastErrorValue @ TEB+0x68.
+__declspec(dllexport) u32 GetLastError() {
+    u32 e;
+    __asm__ volatile("movl %%gs:0x68, %0" : "=r"(e));
+    return e;
+}
+__declspec(dllexport) void SetLastError(u32 code) {
+    __asm__ volatile("movl %0, %%gs:0x68" :: "r"(code) : "memory");
+}
 
-__declspec(dllexport)
-void SetLastError(DWORD dwErrCode) { (void)dwErrCode; }
+// TEB.ClientId.UniqueProcess/Thread @ TEB+0x40 / +0x48.
+__declspec(dllexport) u32 GetCurrentProcessId() {
+    u64 pid;
+    __asm__ volatile("movq %%gs:0x40, %0" : "=r"(pid));
+    return (u32)pid;
+}
+__declspec(dllexport) u32 GetCurrentThreadId() {
+    u64 tid;
+    __asm__ volatile("movq %%gs:0x48, %0" : "=r"(tid));
+    return (u32)tid;
+}
+
+// KUSER_SHARED_DATA: GetTickCount = TickCountLow(0x320) * Multiplier(0x004) >> 24.
+__declspec(dllexport) u32 GetTickCount() {
+    volatile u32* k = reinterpret_cast<volatile u32*>(0x7FFE0000ULL);
+    u64 lo  = k[0x320 / 4];
+    u64 mul = k[0x004 / 4];
+    return (u32)((lo * mul) >> 24);
+}
+
+// Heap: PEB.ProcessHeap (PEB+0x30) is the default heap handle. HeapAlloc backs
+// each allocation with NtAllocateVirtualMemory (zeroed). HeapFree is a no-op
+// (the kernel allocator is bump-only for now).
+__declspec(dllexport) void* GetProcessHeap() {
+    return reinterpret_cast<void*>(*reinterpret_cast<volatile u64*>(peb() + 0x30));
+}
+__declspec(dllexport) void* HeapAlloc(void* /*hHeap*/, u32 /*flags*/, u64 bytes) {
+    if (!bytes) bytes = 1;
+    i64 va = sc(NT_ALLOC_VM, (i64)bytes, 0, 0);
+    return reinterpret_cast<void*>((u64)va);
+}
+__declspec(dllexport) int HeapFree(void* /*hHeap*/, u32 /*flags*/, void* /*mem*/) {
+    return 1;
+}
+
+// GetModuleHandle(NULL) -> the EXE's own base (PEB.ImageBaseAddress @0x10).
+__declspec(dllexport) void* GetModuleHandleW(const void* name) {
+    if (name) return nullptr;
+    return reinterpret_cast<void*>(*reinterpret_cast<volatile u64*>(peb() + 0x10));
+}
+
+// GetCommandLineW -> PEB.ProcessParameters(0x20).CommandLine.Buffer(0x78).
+__declspec(dllexport) const u16* GetCommandLineW() {
+    u64 params = *reinterpret_cast<volatile u64*>(peb() + 0x20);
+    if (!params) return nullptr;
+    return reinterpret_cast<const u16*>(*reinterpret_cast<volatile u64*>(params + 0x78));
+}
+
+// --- File I/O over NtCreateFile / NtReadFile / NtClose ---
+static u32 a_strlen(const char* s) { u32 n = 0; while (s[n]) ++n; return n; }
+
+__declspec(dllexport) void* CreateFileA(const char* name, u32 /*access*/,
+        u32 /*share*/, void* /*sa*/, u32 /*disp*/, u32 /*flags*/, void* /*tmpl*/) {
+    i64 h = sc(NT_CREATE_FILE, (i64)(u64)name, (i64)a_strlen(name), 0);
+    return h > 0 ? reinterpret_cast<void*>((u64)h)
+                 : reinterpret_cast<void*>((u64)-1);   // INVALID_HANDLE_VALUE
+}
+
+__declspec(dllexport) int ReadFile(void* hFile, void* buf, u32 len,
+                                   u32* read, void* /*overlapped*/) {
+    i64 n = sc4(NT_READ_FILE, (i64)(u64)hFile, (i64)(u64)buf, 0 /*offset*/, (i64)len);
+    if (read) *read = (u32)n;
+    return 1;
+}
+
+__declspec(dllexport) int CloseHandle(void* hObject) {
+    sc(NT_CLOSE_HANDLE, (i64)(u64)hObject, 0, 0);
+    return 1;
+}
+
+// --- Dynamic linking ---
+// GetModuleHandleA(NULL) -> own image; by name -> loader registry base.
+__declspec(dllexport) void* GetModuleHandleA(const char* name) {
+    if (!name)
+        return reinterpret_cast<void*>(*reinterpret_cast<volatile u64*>(peb() + 0x10));
+    i64 b = sc(NT_GET_MODULE_BASE, (i64)(u64)name, (i64)a_strlen(name), 0);
+    return reinterpret_cast<void*>((u64)b);
+}
+
+// LoadLibraryA: map a DLL (from the kernel catalog) into this process.
+__declspec(dllexport) void* LoadLibraryA(const char* name) {
+    i64 b = sc(NT_LOAD_LIBRARY, (i64)(u64)name, (i64)a_strlen(name), 0);
+    return reinterpret_cast<void*>((u64)b);
+}
+
+// Parse a mapped module's PE export directory and return the named proc.
+__declspec(dllexport) void* GetProcAddress(void* hModule, const char* proc) {
+    u8* base = reinterpret_cast<u8*>(hModule);
+    if (!base || !proc) return nullptr;
+    u32 e_lfanew = *reinterpret_cast<u32*>(base + 0x3C);
+    u8* opt = base + e_lfanew + 24;
+    u32 exp_rva = *reinterpret_cast<u32*>(opt + 112);   // DataDirectory[0]
+    if (!exp_rva) return nullptr;
+    u8* ed = base + exp_rva;
+    u32 num_names = *reinterpret_cast<u32*>(ed + 24);
+    u32* funcs = reinterpret_cast<u32*>(base + *reinterpret_cast<u32*>(ed + 28));
+    u32* names = reinterpret_cast<u32*>(base + *reinterpret_cast<u32*>(ed + 32));
+    u16* ords  = reinterpret_cast<u16*>(base + *reinterpret_cast<u32*>(ed + 36));
+    for (u32 i = 0; i < num_names; ++i) {
+        const char* en = reinterpret_cast<const char*>(base + names[i]);
+        if (streq(en, proc)) return base + funcs[ords[i]];
+    }
+    return nullptr;
+}
 
 } // extern "C"
